@@ -3,7 +3,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 import subprocess
 import os
 import uuid
-BOT_TOKEN = "7731592926:AAFM64D6cHceoKSTYE8xalfFGu3JwebyTVc"
+BOT_TOKEN = os.getenv("7731592926:AAFM64D6cHceoKSTYE8xalfFGu3JwebyTVc")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("أرسل رابط فيديو تيك توك وسأقوم بتحميله لك 🎥")
