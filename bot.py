@@ -30,7 +30,7 @@ async def download_tiktok_video(update: Update, context: ContextTypes.DEFAULT_TY
         os.remove(output_path)
 
     except Exception as e:
-        await update.message.reply_text(المقطع أكتمل دقايق و يوصل لك")
+        await update.message.reply_text("المقطع أكتمل دقايق و يوصل لك")
         print(e)
 
 def main():
