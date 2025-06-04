@@ -1,8 +1,9 @@
 services:
-  - type: web
-    name: tiktok-telegram-bot
+  - type: worker
+    name: telegram-tiktok-bot
     env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
-    plan: free
-    autoDeploy: true
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python bot.py"
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
