@@ -5,8 +5,7 @@ import os
 import uuid
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_USERNAME = "YourChannelUsername"  # بدون @
-
+CHANNEL_USERNAME = "saudi_J0b"  # بدون @
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("أرسل رابط فيديو تيك توك وسأقوم بتحميله لك 🎥")
 
