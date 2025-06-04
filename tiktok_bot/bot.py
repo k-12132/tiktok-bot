@@ -3,7 +3,9 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 import subprocess
 import os
 import uuid
-BOT_TOKEN = os.getenv("7731592926:AAFM64D6cHceoKSTYE8xalfFGu3JwebyTVc")
+
+# الحصول على التوكن من متغير البيئة
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("أرسل رابط فيديو تيك توك وسأقوم بتحميله لك 🎥")
@@ -29,7 +31,7 @@ async def download_tiktok_video(update: Update, context: ContextTypes.DEFAULT_TY
         os.remove(output_path)
 
     except Exception as e:
-        await update.message.reply_text(المقطع أكتمل دقايق و يوصل لك")
+        await update.message.reply_text("حدث خطأ أثناء تحميل الفيديو. حاول مرة أخرى لاحقًا.")
         print(e)
 
 def main():
