@@ -42,7 +42,6 @@ def main():
 
     app.run_webhook(
         listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 8443)),
+        port=int(os.environ.get("PORT", 10000)),  # قد تستخدم 10000 أو 8443 حسب إعدادات Render
         webhook_url=os.environ.get("WEBHOOK_URL")
     )
-
