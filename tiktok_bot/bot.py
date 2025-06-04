@@ -4,9 +4,8 @@ import subprocess
 import os
 import uuid
 
-# التوكن واسم القناة من متغيرات البيئة
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_USERNAME = "@YourChannelUsername"  # غيّره إلى اسم قناتك
+CHANNEL_USERNAME = "YourChannelUsername"  # بدون @
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("أرسل رابط فيديو تيك توك وسأقوم بتحميله لك 🎥")
@@ -14,14 +13,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def download_tiktok_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    # التحقق من الاشتراك في القناة
     try:
         member = await context.bot.get_chat_member(CHANNEL_USERNAME, user_id)
         if member.status not in ["member", "creator", "administrator"]:
-            await update.message.reply_text("🚫 يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\n" + "https://t.me/saudi_J0b")
+            await update.message.reply_text("🚫 يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\nhttps://t.me/" + "https://t.me/saudi_J0b")
             return
     except Exception as e:
-        await update.message.reply_text("🚫 يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\n" + "https://t.me/saudi_J0b")
+        await update.message.reply_text("🚫 يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\nhttps://t.me/" + "https://t.me/saudi_J0b")
         print("Error checking membership:", e)
         return
 
@@ -54,7 +52,11 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, download_tiktok_video))
 
-    app.run_polling()
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 10000)),
+        webhook_url=os.environ.get("WEBHOOK_URL")
+    )
 
 if __name__ == "__main__":
     main()
