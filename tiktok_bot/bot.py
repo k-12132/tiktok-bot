@@ -4,13 +4,27 @@ import subprocess
 import os
 import uuid
 
-# الحصول على التوكن من متغير البيئة
+# التوكن واسم القناة من متغيرات البيئة
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_USERNAME = "@YourChannelUsername"  # غيّره إلى اسم قناتك
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("أرسل رابط فيديو تيك توك وسأقوم بتحميله لك 🎥")
 
 async def download_tiktok_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    # التحقق من الاشتراك في القناة
+    try:
+        member = await context.bot.get_chat_member(CHANNEL_USERNAME, user_id)
+        if member.status not in ["member", "creator", "administrator"]:
+            await update.message.reply_text("🚫 يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\n" + CHANNEL_USERNAME)
+            return
+    except Exception as e:
+        await update.message.reply_text("🚫 يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\n" + CHANNEL_USERNAME)
+        print("Error checking membership:", e)
+        return
+
     url = update.message.text
 
     if "tiktok.com" not in url:
@@ -31,20 +45,20 @@ async def download_tiktok_video(update: Update, context: ContextTypes.DEFAULT_TY
         os.remove(output_path)
 
     except Exception as e:
-        await update.message.reply_text("حدث خطأ أثناء تحميل الفيديو. حاول مرة أخرى لاحقًا.")
-        print("خطأ:", e)
+        await update.message.reply_text("❌ حدث خطأ أثناء تحميل الفيديو. حاول مرة أخرى لاحقًا.")
+        print(e)
 
 def main():
-    if not BOT_TOKEN:
-        raise ValueError("BOT_TOKEN is not set in environment variables.")
-
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, download_tiktok_video))
 
-    print("🚀 البوت بدأ بنجاح ويعمل الآن...")
-    app.run_polling()  # ✅ مهم جدًا: استخدم run_polling على Render
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 10000)),
+        webhook_url=os.environ.get("WEBHOOK_URL")
+    )
 
 if __name__ == "__main__":
     main()
