@@ -16,10 +16,10 @@ async def download_tiktok_video(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         member = await context.bot.get_chat_member(CHANNEL_USERNAME, user_id)
         if member.status not in ["member", "creator", "administrator"]:
-            await update.message.reply_text("🚫 يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\nhttps://t.me/" + "https://t.me/saudi_J0b")
+            await update.message.reply_text("🚫 يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\nhttps://t.me/saudi_J0b")
             return
     except Exception as e:
-        await update.message.reply_text("🚫 يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\nhttps://t.me/" + "https://t.me/saudi_J0b")
+        await update.message.reply_text("🚫 يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\nhttps://t.me/saudi_J0b")
         print("Error checking membership:", e)
         return
 
@@ -52,11 +52,8 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, download_tiktok_video))
 
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000)),
-        webhook_url=os.environ.get("WEBHOOK_URL")
-    )
+    # استخدم polling بدلاً من webhook
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
