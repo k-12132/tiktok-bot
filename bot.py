@@ -19,7 +19,7 @@ logging.basicConfig(
 
 # متغيرات البيئة
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_USERNAME = "@saudi_J0b"
+CHANNEL_USERNAME = "@saudiJ0b"
 # أمر /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("أرسل رابط فيديو تيك توك وسأقوم بتحميله لك 🎥")
@@ -32,10 +32,10 @@ async def download_tiktok_video(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         member = await context.bot.get_chat_member(CHANNEL_USERNAME, user_id)
         if member.status not in ["member", "creator", "administrator"]:
-            await update.message.reply_text("🚫 يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\nhttps://t.me/saudi_J0b")
+            await update.message.reply_text("🚫 يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\nhttps://t.me/saudiJ0b")
             return
     except Exception as e:
-        await update.message.reply_text("🚫 يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\nhttps://t.me/saudi_J0b")
+        await update.message.reply_text("🚫 يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\nhttps://t.me/saudiJ0b")
         logging.error(f"Error checking membership: {e}")
         return
 
