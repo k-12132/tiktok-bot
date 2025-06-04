@@ -40,8 +40,5 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, download_tiktok_video))
 
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000)),  # قد تستخدم 10000 أو 8443 حسب إعدادات Render
-        webhook_url=os.environ.get("WEBHOOK_URL")
-    )
+    app.run_polling()
+
