@@ -18,10 +18,10 @@ async def download_tiktok_video(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         member = await context.bot.get_chat_member(CHANNEL_USERNAME, user_id)
         if member.status not in ["member", "creator", "administrator"]:
-            await update.message.reply_text("🚫 يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\n" + "https://t.me/+dmB9f0UNs-9lMTBk")
+            await update.message.reply_text("🚫 يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\n" + "https://t.me/saudi_J0b")
             return
     except Exception as e:
-        await update.message.reply_text("🚫 يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\n" + "https://t.me/+dmB9f0UNs-9lMTBk")
+        await update.message.reply_text("🚫 يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\n" + "https://t.me/saudi_J0b")
         print("Error checking membership:", e)
         return
 
