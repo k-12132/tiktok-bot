@@ -35,10 +35,14 @@ async def download_tiktok_video(update: Update, context: ContextTypes.DEFAULT_TY
         print(e)
 
 def main():
+    if not BOT_TOKEN:
+        raise ValueError("BOT_TOKEN is not set in environment variables.")
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, download_tiktok_video))
 
-    app.run_polling()
+    app.run_polling()  # 👈 هذا هو المناسب لـ Render Background Worker
+
 
