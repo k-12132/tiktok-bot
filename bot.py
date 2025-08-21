@@ -11,7 +11,7 @@ from telegram.ext import (
     filters,
 )
 
-# إعدادات السجل لتسجيل الأخطاء
+# إعداد السجل لتسجيل الأخطاء
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -19,24 +19,36 @@ logging.basicConfig(
 
 # متغيرات البيئة
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_USERNAME = "@saudiJ0b"
+
+# أسماء القنوات المطلوبة
+CHANNELS = ["@saudiJ0b", "@kh01ed"]
+
 # أمر /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("أرسل رابط فيديو تيك توك وسأقوم بتحميله لك 🎥")
+
+# وظيفة للتحقق من اشتراك المستخدم في كل القنوات المطلوبة
+async def is_user_subscribed(bot, user_id):
+    for channel in CHANNELS:
+        try:
+            member = await bot.get_chat_member(channel, user_id)
+            if member.status not in ["member", "creator", "administrator"]:
+                return False, channel
+        except Exception as e:
+            logging.error(f"Error checking membership in {channel}: {e}")
+            return False, channel
+    return True, None
 
 # الوظيفة الأساسية لتحميل فيديوهات TikTok
 async def download_tiktok_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    # التحقق من الاشتراك في القناة
-    try:
-        member = await context.bot.get_chat_member(CHANNEL_USERNAME, user_id)
-        if member.status not in ["member", "creator", "administrator"]:
-            await update.message.reply_text("🚫 يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\nhttps://t.me/saudiJ0b")
-            return
-    except Exception as e:
-        await update.message.reply_text("🚫 يجب عليك الاشتراك في القناة أولاً لاستخدام البوت:\nhttps://t.me/saudiJ0b")
-        logging.error(f"Error checking membership: {e}")
+    # التحقق من الاشتراك في القنوات كلها
+    subscribed, channel = await is_user_subscribed(context.bot, user_id)
+    if not subscribed:
+        await update.message.reply_text(
+            f"🚫 يجب عليك الاشتراك في هذه القناة أولاً لاستخدام البوت:\nhttps://t.me/{channel.replace('@','')}"
+        )
         return
 
     # تحقق من الرابط
@@ -63,7 +75,7 @@ async def download_tiktok_video(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("❌ حدث خطأ أثناء تحميل الفيديو. حاول مرة أخرى لاحقًا.")
         logging.error(f"Download error: {e}")
 
-# معالج الأخطاء العامة
+# معالج الأخطاء
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logging.error(f"حدث خطأ غير متوقع: {context.error}")
 
