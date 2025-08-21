@@ -2,11 +2,12 @@ import os
 import uuid
 import subprocess
 import logging
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -17,7 +18,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# متغيرات البيئة
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # أسماء القنوات المطلوبة
@@ -25,39 +25,68 @@ CHANNELS = ["@saudiJ0b", "@kh01ed"]
 
 # أمر /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("أرسل رابط فيديو تيك توك وسأقوم بتحميله لك 🎥")
+    await send_subscription_message(update, context)
 
-# وظيفة للتحقق من اشتراك المستخدم في كل القنوات المطلوبة
-async def is_user_subscribed(bot, user_id):
+# دالة لإرسال رسالة الاشتراك
+async def send_subscription_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton(f"📢 اشترك في {ch}", url=f"https://t.me/{ch.replace('@','')}")]
+        for ch in CHANNELS
+    ]
+    keyboard.append([InlineKeyboardButton("✅ تحققت من الاشتراك", callback_data="check_subscription")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if update.message:
+        await update.message.reply_text(
+            "🚫 يجب عليك الاشتراك في القنوات التالية لاستخدام البوت:",
+            reply_markup=reply_markup
+        )
+    elif update.callback_query:
+        await update.callback_query.message.edit_text(
+            "🚫 يجب عليك الاشتراك في القنوات التالية لاستخدام البوت:",
+            reply_markup=reply_markup
+        )
+
+# التحقق من اشتراك المستخدم
+async def not_subscribed_channels(bot, user_id):
+    not_joined = []
     for channel in CHANNELS:
         try:
             member = await bot.get_chat_member(channel, user_id)
             if member.status not in ["member", "creator", "administrator"]:
-                return False, channel
+                not_joined.append(channel)
         except Exception as e:
             logging.error(f"Error checking membership in {channel}: {e}")
-            return False, channel
-    return True, None
+            not_joined.append(channel)
+    return not_joined
 
-# الوظيفة الأساسية لتحميل فيديوهات TikTok
+# معالجة الأزرار
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "check_subscription":
+        user_id = query.from_user.id
+        not_joined = await not_subscribed_channels(context.bot, user_id)
+        if not_joined:
+            await send_subscription_message(update, context)
+        else:
+            await query.message.edit_text("✅ تم التحقق من اشتراكك، أرسل الآن رابط فيديو تيك توك 🎥")
+
+# الوظيفة الأساسية لتحميل الفيديو
 async def download_tiktok_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    not_joined = await not_subscribed_channels(context.bot, user_id)
 
-    # التحقق من الاشتراك في القنوات كلها
-    subscribed, channel = await is_user_subscribed(context.bot, user_id)
-    if not subscribed:
-        await update.message.reply_text(
-            f"🚫 يجب عليك الاشتراك في هذه القناة أولاً لاستخدام البوت:\nhttps://t.me/{channel.replace('@','')}"
-        )
+    if not_joined:
+        await send_subscription_message(update, context)
         return
 
-    # تحقق من الرابط
     url = update.message.text
     if "tiktok.com" not in url:
         await update.message.reply_text("❌ الرجاء إرسال رابط صحيح من تيك توك 📎")
         return
 
-    # التحميل
     filename = f"{uuid.uuid4()}.mp4"
     output_path = os.path.join("downloads", filename)
 
@@ -70,7 +99,6 @@ async def download_tiktok_video(update: Update, context: ContextTypes.DEFAULT_TY
             await update.message.reply_video(video)
 
         os.remove(output_path)
-
     except Exception as e:
         await update.message.reply_text("❌ حدث خطأ أثناء تحميل الفيديو. حاول مرة أخرى لاحقًا.")
         logging.error(f"Download error: {e}")
@@ -79,12 +107,12 @@ async def download_tiktok_video(update: Update, context: ContextTypes.DEFAULT_TY
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logging.error(f"حدث خطأ غير متوقع: {context.error}")
 
-# نقطة البداية
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, download_tiktok_video))
+    app.add_handler(CallbackQueryHandler(button_handler))
     app.add_error_handler(error_handler)
 
     app.run_polling()
