@@ -28,26 +28,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("أرسل رابط فيديو تيك توك وسأقوم بتحميله لك 🎥")
 
 # وظيفة للتحقق من اشتراك المستخدم في كل القنوات المطلوبة
-async def is_user_subscribed(bot, user_id):
+async def not_subscribed_channels(bot, user_id):
+    not_joined = []
     for channel in CHANNELS:
         try:
             member = await bot.get_chat_member(channel, user_id)
             if member.status not in ["member", "creator", "administrator"]:
-                return False, channel
+                not_joined.append(channel)
         except Exception as e:
             logging.error(f"Error checking membership in {channel}: {e}")
-            return False, channel
-    return True, None
+            not_joined.append(channel)
+    return not_joined
 
 # الوظيفة الأساسية لتحميل فيديوهات TikTok
 async def download_tiktok_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    # التحقق من الاشتراك في القنوات كلها
-    subscribed, channel = await is_user_subscribed(context.bot, user_id)
-    if not subscribed:
+    # التحقق من الاشتراك في القنوات
+    not_joined = await not_subscribed_channels(context.bot, user_id)
+    if not_joined:
+        links = "\n".join([f"🔗 https://t.me/{ch.replace('@','')}" for ch in not_joined])
         await update.message.reply_text(
-            f"🚫 يجب عليك الاشتراك في هذه القناة أولاً لاستخدام البوت:\nhttps://t.me/{channel.replace('@','')}"
+            f"🚫 يجب عليك الاشتراك في القنوات التالية أولاً لاستخدام البوت:\n{links}"
         )
         return
 
