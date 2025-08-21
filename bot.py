@@ -2,7 +2,7 @@ import os
 import uuid
 import subprocess
 import logging
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -47,9 +47,15 @@ async def download_tiktok_video(update: Update, context: ContextTypes.DEFAULT_TY
     # التحقق من الاشتراك في القنوات
     not_joined = await not_subscribed_channels(context.bot, user_id)
     if not_joined:
-        links = "\n".join([f"🔗 https://t.me/{ch.replace('@','')}" for ch in not_joined])
+        keyboard = [
+            [InlineKeyboardButton(f"📢 اشترك في {ch}", url=f"https://t.me/{ch.replace('@','')}")]
+            for ch in not_joined
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
         await update.message.reply_text(
-            f"🚫 يجب عليك الاشتراك في القنوات التالية أولاً لاستخدام البوت:\n{links}"
+            "🚫 يجب عليك الاشتراك في القنوات التالية أولاً لاستخدام البوت:",
+            reply_markup=reply_markup
         )
         return
 
