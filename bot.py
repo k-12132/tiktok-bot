@@ -20,11 +20,11 @@ logging.basicConfig(
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# أسماء القنوات المطلوبة
+# قائمة القنوات والقروبات
 CHANNELS = [
     {"type": "channel", "id": "@saudiJ0b"},
     {"type": "channel", "id": "@kh01ed"},
-    {"type": "group", "id": "@kh01ed2"}  # ← هذا القروب الجديد
+    {"type": "group", "id": "@kh01ed2"}  # القروب العام
 ]
 
 # أمر /start
@@ -32,36 +32,38 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_subscription_message(update, context)
 
 # دالة لإرسال رسالة الاشتراك
-async def send_subscription_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton(f"📢 اشترك في {ch}", url=f"https://t.me/{ch.replace('@','')}")]
-        for ch in CHANNELS
-    ]
+async def send_subscription_message(update: Update, context: ContextTypes.DEFAULT_TYPE, extra_text: str = ""):
+    keyboard = []
+    for item in CHANNELS:
+        if item["type"] == "channel":
+            keyboard.append([InlineKeyboardButton(f"📢 اشترك في {item['id']}", url=f"https://t.me/{item['id'].replace('@','')}")])
+        elif item["type"] == "group":
+            keyboard.append([InlineKeyboardButton("👥 انضم للقروب", url=f"https://t.me/{item['id'].replace('@','')}")])
+
     keyboard.append([InlineKeyboardButton("✅ تحققت من الاشتراك", callback_data="check_subscription")])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
+    text = "🚫 يجب عليك الاشتراك في القنوات والدخول إلى القروبات التالية لاستخدام البوت:"
+    if extra_text:
+        text += f"\n\n⚠️ {extra_text}"
+
     if update.message:
-        await update.message.reply_text(
-            "🚫 يجب عليك الاشتراك في القنوات التالية لاستخدام البوت:",
-            reply_markup=reply_markup
-        )
+        await update.message.reply_text(text, reply_markup=reply_markup)
     elif update.callback_query:
-        await update.callback_query.message.edit_text(
-            "🚫 يجب عليك الاشتراك في القنوات التالية لاستخدام البوت:",
-            reply_markup=reply_markup
-        )
+        await update.callback_query.message.edit_text(text, reply_markup=reply_markup)
 
 # التحقق من اشتراك المستخدم
 async def not_subscribed_channels(bot, user_id):
     not_joined = []
-    for channel in CHANNELS:
+    for item in CHANNELS:
         try:
-            member = await bot.get_chat_member(channel, user_id)
+            member = await bot.get_chat_member(item["id"], user_id)
             if member.status not in ["member", "creator", "administrator"]:
-                not_joined.append(channel)
+                not_joined.append(item)
         except Exception as e:
-            logging.error(f"Error checking membership in {channel}: {e}")
-            not_joined.append(channel)
+            logging.error(f"Error checking membership in {item['id']}: {e}")
+            # نضيفها كـ "مو مشترك" لكن مع تنبيه
+            not_joined.append({"id": item["id"], "error": True, "type": item["type"]})
     return not_joined
 
 # معالجة الأزرار
@@ -72,8 +74,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "check_subscription":
         user_id = query.from_user.id
         not_joined = await not_subscribed_channels(context.bot, user_id)
+
         if not_joined:
-            await send_subscription_message(update, context)
+            # إذا فيه خطأ تحقق (غالباً البوت مو أدمن)
+            errors = [i for i in not_joined if "error" in i]
+            if errors:
+                await send_subscription_message(update, context, "تأكد أن البوت مضاف كأدمن في القنوات/القروبات حتى أقدر أتحقق من عضويتك.")
+            else:
+                await send_subscription_message(update, context)
         else:
             await query.message.edit_text("✅ تم التحقق من اشتراكك، أرسل الآن رابط فيديو تيك توك 🎥")
 
@@ -83,7 +91,11 @@ async def download_tiktok_video(update: Update, context: ContextTypes.DEFAULT_TY
     not_joined = await not_subscribed_channels(context.bot, user_id)
 
     if not_joined:
-        await send_subscription_message(update, context)
+        errors = [i for i in not_joined if "error" in i]
+        if errors:
+            await send_subscription_message(update, context, "تأكد أن البوت مضاف كأدمن في القنوات/القروبات حتى أقدر أتحقق من عضويتك.")
+        else:
+            await send_subscription_message(update, context)
         return
 
     url = update.message.text
