@@ -21,7 +21,11 @@ logging.basicConfig(
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # أسماء القنوات المطلوبة
-CHANNELS = ["@saudiJ0b", "@kh01ed","kh01ed2"]
+CHANNELS = [
+    {"type": "channel", "id": "@saudiJ0b"},
+    {"type": "channel", "id": "@kh01ed"},
+    {"type": "group", "id": "@kh01ed2"}  # ← هذا القروب الجديد
+]
 
 # أمر /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
