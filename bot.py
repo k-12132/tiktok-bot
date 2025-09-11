@@ -1,4 +1,4 @@
-import os
+import os 
 import uuid
 import subprocess
 import logging
@@ -20,6 +20,10 @@ logging.basicConfig(
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
+# روابط حساباتك في TikTok و Snapchat
+TIKTOK_URL = "https://www.tiktok.com/@YourTikTokUser"
+SNAPCHAT_URL = "https://www.snapchat.com/add/YourSnapUser"
+
 # قائمة القنوات والقروبات
 CHANNELS = [
     {"type": "channel", "id": "@saudiJ0b"},
@@ -40,12 +44,21 @@ async def send_subscription_message(update: Update, context: ContextTypes.DEFAUL
         elif item["type"] == "group":
             keyboard.append([InlineKeyboardButton("👥 انضم للقروب", url=f"https://t.me/{item['id'].replace('@','')}")])
 
+    # زر التحقق
     keyboard.append([InlineKeyboardButton("✅ تحققت من الاشتراك", callback_data="check_subscription")])
+
+    # أزرار TikTok و Snapchat
+    keyboard.append([InlineKeyboardButton("🎵 تابعني على TikTok", "https://www.tiktok.com/@kh01ed?is_from_webapp=1&sender_device=pc")])
+    keyboard.append([InlineKeyboardButton("👻 أضفني على Snapchat", "https://snapchat.com/t/Di0JRwPG")])
+
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     text = "🚫 يجب عليك الاشتراك في القنوات والدخول إلى القروبات التالية لاستخدام البوت:"
     if extra_text:
         text += f"\n\n⚠️ {extra_text}"
+
+    # نص إضافي للترويج
+    text += "\n\nولا تنسَ متابعتنا على تيك توك 🎵 و سناب 👻 لآخر التحديثات 💡"
 
     if update.message:
         await update.message.reply_text(text, reply_markup=reply_markup)
@@ -62,7 +75,6 @@ async def not_subscribed_channels(bot, user_id):
                 not_joined.append(item)
         except Exception as e:
             logging.error(f"Error checking membership in {item['id']}: {e}")
-            # نضيفها كـ "مو مشترك" لكن مع تنبيه
             not_joined.append({"id": item["id"], "error": True, "type": item["type"]})
     return not_joined
 
@@ -76,7 +88,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         not_joined = await not_subscribed_channels(context.bot, user_id)
 
         if not_joined:
-            # إذا فيه خطأ تحقق (غالباً البوت مو أدمن)
             errors = [i for i in not_joined if "error" in i]
             if errors:
                 await send_subscription_message(update, context, "تأكد أن البوت مضاف كأدمن في القنوات/القروبات حتى أقدر أتحقق من عضويتك.")
