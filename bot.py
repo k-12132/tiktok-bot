@@ -47,9 +47,10 @@ async def send_subscription_message(update: Update, context: ContextTypes.DEFAUL
     # زر التحقق
     keyboard.append([InlineKeyboardButton("✅ تحققت من الاشتراك", callback_data="check_subscription")])
 
-    # أزرار TikTok و Snapchat
-   InlineKeyboardButton("🎵 تابعني على TikTok", url="https://www.tiktok.com/@kh01ed?is_from_webapp=1&sender_device=pc")
-InlineKeyboardButton("👻 أضفني على Snapchat", url="https://snapchat.com/t/Di0JRwPG")
+ # أزرار TikTok و Snapchat
+keyboard.append([InlineKeyboardButton("🎵 تابعني على TikTok", url="https://www.tiktok.com/@kh01ed?is_from_webapp=1&sender_device=pc")])
+keyboard.append([InlineKeyboardButton("👻 أضفني على Snapchat", url="https://snapchat.com/t/Di0JRwPG")])
+
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
