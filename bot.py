@@ -112,6 +112,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [
                         InlineKeyboardButton("🎵 تابعني على TikTok", url=TIKTOK_URL),
                         InlineKeyboardButton("👻 أضفني على Snapchat", url=SNAPCHAT_URL)
+                    ],
+                    [
+                        InlineKeyboardButton("🤝 شارك البوت مع أصدقائك", url=f"https://t.me/{context.bot.username}")
                     ]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
@@ -151,6 +154,24 @@ async def download_tiktok_video(update: Update, context: ContextTypes.DEFAULT_TY
             await update.message.reply_video(video)
 
         os.remove(output_path)
+
+        # رسالة تذكير بعد التحميل
+        keyboard = [
+            [
+                InlineKeyboardButton("🎵 تابعني على TikTok", url=TIKTOK_URL),
+                InlineKeyboardButton("👻 أضفني على Snapchat", url=SNAPCHAT_URL)
+            ],
+            [
+                InlineKeyboardButton("🤝 شارك البوت مع أصدقائك", url=f"https://t.me/{context.bot.username}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await update.message.reply_text(
+            "🎉 إذا أعجبك الفيديو، تابعنا على تيك توك وسناب لمزيد من المحتوى!",
+            reply_markup=reply_markup
+        )
+
     except Exception as e:
         await update.message.reply_text("❌ حدث خطأ أثناء تحميل الفيديو. حاول مرة أخرى لاحقًا.")
         logging.error(f"Download error: {e}")
