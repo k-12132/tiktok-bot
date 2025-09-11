@@ -24,7 +24,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # روابط حساباتك في TikTok و Snapchat
 TIKTOK_URL = "https://www.tiktok.com/@kh01ed?is_from_webapp=1&sender_device=pc"
-SNAPCHAT_URL = "https://snapchat.com/t/9g7sbzuB"
+SNAPCHAT_URL = "https://snapchat.com/t/Di0JRwPG"
 
 # قائمة القنوات والقروبات (تم حذف القناة الأولى)
 CHANNELS = [
