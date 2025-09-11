@@ -3,7 +3,6 @@ import uuid
 import subprocess
 import logging
 import json
-import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -32,9 +31,10 @@ CHANNELS = [
     {"type": "group", "id": "@kh01ed2"}  # القروب العام
 ]
 
-# ملفات لتخزين المستخدمين الذين تم عرض الرسالة لهم
+# ملف لتخزين المستخدمين الذين تم عرض الرسالة لهم
 VERIFIED_FILE = "verified_users.json"
 
+# تحميل المستخدمين المحققين عند بدء البوت
 if os.path.exists(VERIFIED_FILE):
     with open(VERIFIED_FILE, "r") as f:
         verified_users = json.load(f)
@@ -45,7 +45,7 @@ else:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_subscription_message(update, context)
 
-# دالة إرسال رسالة الاشتراك
+# دالة لإرسال رسالة الاشتراك
 async def send_subscription_message(update: Update, context: ContextTypes.DEFAULT_TYPE, extra_text: str = ""):
     keyboard = []
     for item in CHANNELS:
@@ -54,7 +54,9 @@ async def send_subscription_message(update: Update, context: ContextTypes.DEFAUL
         elif item["type"] == "group":
             keyboard.append([InlineKeyboardButton("👥 انضم للقروب", url=f"https://t.me/{item['id'].replace('@','')}")])
 
+    # زر التحقق
     keyboard.append([InlineKeyboardButton("✅ تحققت من الاشتراك", callback_data="check_subscription")])
+
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     text = "🚫 يجب عليك الاشتراك في القنوات والدخول إلى القروبات التالية لاستخدام البوت:"
@@ -85,7 +87,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     if query.data == "check_subscription":
-        user_id = str(query.from_user.id)
+        user_id = str(query.from_user.id)  # نخزن كـ string للـ JSON
         not_joined = await not_subscribed_channels(context.bot, int(user_id))
 
         if not_joined:
@@ -95,10 +97,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await send_subscription_message(update, context)
         else:
-            await query.message.edit_text("✅ تم التحقق من اشتراكك، أرسل رابط فيديو تيك توك أو صورة 📎")
+            # ✅ تم الاشتراك
+            await query.message.edit_text("✅ تم التحقق من اشتراكك، أرسل الآن رابط فيديو تيك توك 🎥")
 
+            # عرض رسالة TikTok وSnapchat مرة واحدة لكل مستخدم
             if user_id not in verified_users:
                 verified_users[user_id] = True
+                # حفظ في ملف JSON
                 with open(VERIFIED_FILE, "w") as f:
                     json.dump(verified_users, f)
 
@@ -108,17 +113,34 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         InlineKeyboardButton("👻 أضفني على Snapchat", url=SNAPCHAT_URL)
                     ],
                     [
-                        InlineKeyboardButton("🤝 شارك البوت مع أصدقائك", switch_inline_query="جرب هذا البوت لتحميل فيديوهات تيك توك وصور 🎵")
+                        InlineKeyboardButton("🤝 شارك البوت مع أصدقائك", url=f"https://t.me/{context.bot.username}")
                     ]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
+
                 await query.message.reply_text(
                     "🎉 يسعدنا إضافتنا على حسابنا في تيك توك وسناب شات لمتابعة كل جديد 💡",
                     reply_markup=reply_markup
                 )
 
-# دالة تحميل الفيديو
-async def download_tiktok_video(update: Update, url: str):
+# الوظيفة الأساسية لتحميل الفيديو
+async def download_tiktok_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    not_joined = await not_subscribed_channels(context.bot, user_id)
+
+    if not_joined:
+        errors = [i for i in not_joined if "error" in i]
+        if errors:
+            await send_subscription_message(update, context, "تأكد أن البوت مضاف كأدمن في القنوات/القروبات حتى أقدر أتحقق من عضويتك.")
+        else:
+            await send_subscription_message(update, context)
+        return
+
+    url = update.message.text
+    if "tiktok.com" not in url:
+        await update.message.reply_text("❌ الرجاء إرسال رابط صحيح من تيك توك 📎")
+        return
+
     filename = f"{uuid.uuid4()}.mp4"
     output_path = os.path.join("downloads", filename)
 
@@ -131,67 +153,27 @@ async def download_tiktok_video(update: Update, url: str):
             await update.message.reply_video(video)
 
         os.remove(output_path)
+
+        # رسالة تذكير بعد التحميل
+        keyboard = [
+            [
+                InlineKeyboardButton("🎵 تابعني على TikTok", url=TIKTOK_URL),
+                InlineKeyboardButton("👻 أضفني على Snapchat", url=SNAPCHAT_URL)
+            ],
+            [
+                InlineKeyboardButton("🤝 شارك البوت مع أصدقائك", url=f"https://t.me/{context.bot.username}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await update.message.reply_text(
+            "🎉 إذا أعجبك الفيديو، تابعنا على تيك توك وسناب لمزيد من المحتوى!",
+            reply_markup=reply_markup
+        )
+
     except Exception as e:
         await update.message.reply_text("❌ حدث خطأ أثناء تحميل الفيديو. حاول مرة أخرى لاحقًا.")
         logging.error(f"Download error: {e}")
-
-# دالة تحميل الصور
-async def download_image(update: Update, url: str):
-    try:
-        filename = f"{uuid.uuid4()}.jpg"
-        output_path = os.path.join("downloads", filename)
-        os.makedirs("downloads", exist_ok=True)
-
-        response = requests.get(url)
-        response.raise_for_status()
-
-        with open(output_path, "wb") as f:
-            f.write(response.content)
-
-        with open(output_path, "rb") as photo:
-            await update.message.reply_photo(photo)
-
-        os.remove(output_path)
-    except Exception as e:
-        await update.message.reply_text("❌ حدث خطأ أثناء تحميل الصورة. حاول مرة أخرى لاحقًا.")
-        logging.error(f"Image download error: {e}")
-
-# دالة التعامل مع الرسائل
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    not_joined = await not_subscribed_channels(context.bot, user_id)
-    if not_joined:
-        errors = [i for i in not_joined if "error" in i]
-        if errors:
-            await send_subscription_message(update, context, "تأكد أن البوت مضاف كأدمن في القنوات/القروبات.")
-        else:
-            await send_subscription_message(update, context)
-        return
-
-    url = update.message.text
-
-    if "tiktok.com" in url:
-        await download_tiktok_video(update, url)
-    elif any(url.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp"]):
-        await download_image(update, url)
-    else:
-        await update.message.reply_text("❌ هذا الرابط غير مدعوم. يرجى إرسال رابط تيك توك أو رابط صورة مباشر.")
-
-    # رسالة تذكير بعد التحميل
-    keyboard = [
-        [
-            InlineKeyboardButton("🎵 تابعني على TikTok", url=TIKTOK_URL),
-            InlineKeyboardButton("👻 أضفني على Snapchat", url=SNAPCHAT_URL)
-        ],
-        [
-            InlineKeyboardButton("🤝 شارك البوت مع أصدقائك", switch_inline_query="جرب هذا البوت لتحميل فيديوهات تيك توك وصور 🎵")
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        "🎉 إذا أعجبك المحتوى، تابعنا على تيك توك وسناب لمزيد من المحتوى!",
-        reply_markup=reply_markup
-    )
 
 # معالج الأخطاء
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -201,7 +183,7 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, download_tiktok_video))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_error_handler(error_handler)
 
