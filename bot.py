@@ -114,7 +114,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         InlineKeyboardButton("👻 أضفني على Snapchat", url=SNAPCHAT_URL)
                     ],
                     [
-                        InlineKeyboardButton("🤝 شارك البوت مع أصدقائك", url=f"https://t.me/{context.bot.username}")
+                        InlineKeyboardButton( "🤝 شارك البوت مع أصدقائك", switch_inline_query=f"")
+
                     ]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
