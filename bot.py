@@ -27,6 +27,7 @@ SNAPCHAT_URL = "https://snapchat.com/t/Di0JRwPG"
 
 # قائمة القنوات والقروبات (تم حذف القناة الأولى)
 CHANNELS = [
+    {"type": "channel", "id": "@saudiJ0b"},
     {"type": "channel", "id": "@kh01ed"},
     {"type": "group", "id": "@kh01ed2"}  # القروب العام
 ]
