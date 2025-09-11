@@ -2,6 +2,7 @@ import os
 import uuid
 import subprocess
 import logging
+import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -30,8 +31,15 @@ CHANNELS = [
     {"type": "group", "id": "@kh01ed2"}  # القروب العام
 ]
 
-# قاموس لتخزين المستخدمين الذين تم التحقق منهم
-verified_users = {}
+# ملف لتخزين المستخدمين الذين تم عرض الرسالة لهم
+VERIFIED_FILE = "verified_users.json"
+
+# تحميل المستخدمين المحققين عند بدء البوت
+if os.path.exists(VERIFIED_FILE):
+    with open(VERIFIED_FILE, "r") as f:
+        verified_users = json.load(f)
+else:
+    verified_users = {}
 
 # أمر /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -79,8 +87,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     if query.data == "check_subscription":
-        user_id = query.from_user.id
-        not_joined = await not_subscribed_channels(context.bot, user_id)
+        user_id = str(query.from_user.id)  # نخزن كـ string للـ JSON
+        not_joined = await not_subscribed_channels(context.bot, int(user_id))
 
         if not_joined:
             errors = [i for i in not_joined if "error" in i]
@@ -92,9 +100,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # ✅ تم الاشتراك
             await query.message.edit_text("✅ تم التحقق من اشتراكك، أرسل الآن رابط فيديو تيك توك 🎥")
 
-            # رسالة TikTok و Snapchat مرة واحدة فقط
+            # عرض رسالة TikTok وSnapchat مرة واحدة لكل مستخدم
             if user_id not in verified_users:
-                verified_users[user_id] = True  # علامة تم التحقق
+                verified_users[user_id] = True
+                # حفظ في ملف JSON
+                with open(VERIFIED_FILE, "w") as f:
+                    json.dump(verified_users, f)
 
                 keyboard = [
                     [
