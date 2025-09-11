@@ -21,15 +21,17 @@ logging.basicConfig(
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # روابط حساباتك في TikTok و Snapchat
-TIKTOK_URL = "https://www.tiktok.com/@YourTikTokUser"
-SNAPCHAT_URL = "https://www.snapchat.com/add/YourSnapUser"
+TIKTOK_URL = "https://www.tiktok.com/@kh01ed?is_from_webapp=1&sender_device=pc"
+SNAPCHAT_URL = "https://snapchat.com/t/Di0JRwPG"
 
-# قائمة القنوات والقروبات
+# قائمة القنوات والقروبات (تم حذف القناة الأولى)
 CHANNELS = [
-    {"type": "channel", "id": "@saudiJ0b"},
     {"type": "channel", "id": "@kh01ed"},
     {"type": "group", "id": "@kh01ed2"}  # القروب العام
 ]
+
+# قاموس لتخزين المستخدمين الذين تم التحقق منهم
+verified_users = {}
 
 # أمر /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -47,18 +49,11 @@ async def send_subscription_message(update: Update, context: ContextTypes.DEFAUL
     # زر التحقق
     keyboard.append([InlineKeyboardButton("✅ تحققت من الاشتراك", callback_data="check_subscription")])
 
-    # أزرار TikTok و Snapchat
-    keyboard.append([InlineKeyboardButton("🎵 تابعني على TikTok", url=TIKTOK_URL)])
-    keyboard.append([InlineKeyboardButton("👻 أضفني على Snapchat", url=SNAPCHAT_URL)])
-
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     text = "🚫 يجب عليك الاشتراك في القنوات والدخول إلى القروبات التالية لاستخدام البوت:"
     if extra_text:
         text += f"\n\n⚠️ {extra_text}"
-
-    # نص إضافي للترويج
-    text += "\n\nولا تنسَ متابعتنا على تيك توك 🎵 و سناب 👻 لآخر التحديثات 💡"
 
     if update.message:
         await update.message.reply_text(text, reply_markup=reply_markup)
@@ -94,7 +89,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await send_subscription_message(update, context)
         else:
+            # ✅ تم الاشتراك
             await query.message.edit_text("✅ تم التحقق من اشتراكك، أرسل الآن رابط فيديو تيك توك 🎥")
+
+            # رسالة TikTok و Snapchat مرة واحدة فقط
+            if user_id not in verified_users:
+                verified_users[user_id] = True  # علامة تم التحقق
+
+                keyboard = [
+                    [
+                        InlineKeyboardButton("🎵 تابعني على TikTok", url=TIKTOK_URL),
+                        InlineKeyboardButton("👻 أضفني على Snapchat", url=SNAPCHAT_URL)
+                    ]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
+                await query.message.reply_text(
+                    "🎉 يسعدنا إضافتنا على حسابنا في تيك توك وسناب شات لمتابعة كل جديد 💡",
+                    reply_markup=reply_markup
+                )
 
 # الوظيفة الأساسية لتحميل الفيديو
 async def download_tiktok_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
