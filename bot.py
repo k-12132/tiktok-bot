@@ -26,6 +26,7 @@ SNAPCHAT_URL = "https://www.snapchat.com/add/YourSnapUser"
 
 # قائمة القنوات والقروبات
 CHANNELS = [
+    {"type": "channel", "id": "@saudiJ0b"},
     {"type": "channel", "id": "@kh01ed"},
     {"type": "group", "id": "@kh01ed2"}  # القروب العام
 ]
