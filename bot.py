@@ -53,7 +53,7 @@ async def send_subscription_message(update: Update, context: ContextTypes.DEFAUL
         if item["type"] == "channel":
             keyboard.append([InlineKeyboardButton(f"📢 اشترك في {item['id']}", url=f"https://t.me/{item['id'].replace('@','')}")])
         elif item["type"] == "group":
-            keyboard.append([InlineKeyboardButton("👥 انضم للقروب", url=f"https://t.me/{item['id'].replace('@','')}")])
+            keyboard.append([InlineKeyboardButton("👥 انضم للقناة", url=f"https://t.me/{item['id'].replace('@','')}")])
 
     # زر التحقق
     keyboard.append([InlineKeyboardButton("✅ تحققت من الاشتراك", callback_data="check_subscription")])
