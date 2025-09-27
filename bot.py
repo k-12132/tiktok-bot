@@ -25,11 +25,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 TIKTOK_URL = "https://www.tiktok.com/@kh01ed?is_from_webapp=1&sender_device=pc"
 SNAPCHAT_URL = "https://snapchat.com/t/Di0JRwPG"
 
-# قائمة القنوات والقروبات (تم حذف القناة الأولى)
+# قائمة القنوات (تم حذف القناة الأولى)
 CHANNELS = [
     {"type": "channel", "id": "@saudiJ0b"},
     {"type": "channel", "id": "@kh01ed"},
-    {"type": "group", "id": "@kh01ed2"}  # القروب العام
+    {"type": "channel", "id": "@a6kard3"}  # القروب العام
 ]
 
 # ملف لتخزين المستخدمين الذين تم عرض الرسالة لهم
