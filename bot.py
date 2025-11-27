@@ -29,7 +29,7 @@ SNAPCHAT_URL = "https://snapchat.com/t/Di0JRwPG"
 CHANNELS = [
     {"type": "channel", "id": "@saudiJ0b"},
     {"type": "channel", "id": "@kh01ed"},
-    {"type": "channel", "id": "@a6kard3"}  # القروب العام
+    {"type": "channel", "id": "@kb_English"}  # القروب العام
 ]
 
 # ملف لتخزين المستخدمين الذين تم عرض الرسالة لهم
