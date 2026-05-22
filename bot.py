@@ -22,8 +22,8 @@ logging.basicConfig(
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # روابط حساباتك في TikTok و Snapchat
-TIKTOK_URL = "https://www.tiktok.com/@kh01ed?is_from_webapp=1&sender_device=pc"
-SNAPCHAT_URL = "https://snapchat.com/t/Di0JRwPG"
+TIKTOK_URL = "https://www.tiktok.com/@sama_learn?_r=1&_t=ZS-96ZR6lQuJNq"
+SNAPCHAT_URL = "https://snapchat.com/t/gvpGHp1H"
 
 # قائمة القنوات (تم حذف القناة الأولى)
 CHANNELS = [
