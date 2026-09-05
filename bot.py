@@ -36,6 +36,8 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 TIKTOK_URL = "https://www.tiktok.com/@kh01ed?_r=1&_t=ZS-99TrxV4Gtjc"
 SNAPCHAT_URL = "https://snapchat.com/t/d9GtFjtN"
+NOON_URL = "https://s.noon.com/iU1YAlSF0Mw"
+NOON_DISCOUNT_CODE = "Hoob"
 CHANNELS = ("@kh01ed",)
 
 DOWNLOAD_TIMEOUT_SECONDS = int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "120"))
@@ -71,6 +73,12 @@ def subscription_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("✅ تحققت من الاشتراك", callback_data="check_subscription")]
     )
     return InlineKeyboardMarkup(rows)
+
+
+def noon_ad_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🛒 تسوّق الآن من نون", url=NOON_URL)]]
+    )
 
 
 def social_keyboard(bot_username: str) -> InlineKeyboardMarkup:
@@ -306,6 +314,13 @@ async def download_tiktok_video(
                 read_timeout=120,
                 write_timeout=120,
             )
+        await message.reply_text(
+            "📢 إعلان\n\n"
+            "🛍️ تسوّق من نون ووفر أكثر!\n"
+            f"🎟️ كود الخصم: {NOON_DISCOUNT_CODE}\n\n"
+            "اضغط على الزر للانتقال إلى نون 👇",
+            reply_markup=noon_ad_keyboard(),
+        )
         await message.reply_text(
             "🎉 تم التحميل. تابعنا على تيك توك وسناب لمزيد من المحتوى!",
             reply_markup=social_keyboard(context.bot.username),
