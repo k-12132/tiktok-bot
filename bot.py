@@ -301,7 +301,7 @@ async def download_tiktok_video(
         await message.reply_text("❌ أرسل رابطًا صحيحًا من TikTok فقط 📎")
         return
 
-    await message.reply_text("⏳ جاري تجهيز الفيديو...")
+    progress_message = await message.reply_text("⏳ جاري تجهيز الفيديو...")
     work_dir = Path(tempfile.mkdtemp(prefix="tiktok-", dir="/tmp"))
     try:
         async with DOWNLOAD_SEMAPHORE:
@@ -331,6 +331,10 @@ async def download_tiktok_video(
             "❌ تعذر تحميل الفيديو. قد يكون خاصًا أو كبيرًا جدًا؛ حاول رابطًا آخر."
         )
     finally:
+        try:
+            await progress_message.delete()
+        except TelegramError:
+            pass
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
