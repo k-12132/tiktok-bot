@@ -197,10 +197,15 @@ async def download_video(url: str, directory: Path) -> Path:
         "--no-progress",
         "--max-filesize",
         str(MAX_VIDEO_BYTES),
+        "--ffmpeg-location",
+        get_ffmpeg_exe(),
+        "--merge-output-format",
+        "mp4",
         "--format",
         (
-            f"best[ext=mp4][filesize<{MAX_VIDEO_BYTES}]/"
-            f"best[ext=mp4]/best[filesize<{MAX_VIDEO_BYTES}]"
+            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
+            "bestvideo+bestaudio/best[ext=mp4][acodec!=none]/"
+            "best[acodec!=none]"
         ),
         "--output",
         output_template,
