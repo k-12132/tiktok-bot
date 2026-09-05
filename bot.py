@@ -27,6 +27,10 @@ logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
 )
 logger = logging.getLogger(__name__)
+# HTTPX includes request URLs in INFO logs. Telegram embeds the bot token in
+# those URLs, so keep transport logging at WARNING to prevent secret leakage.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 TIKTOK_URL = "https://www.tiktok.com/@sama_learn?_r=1&_t=ZS-96ZR6lQuJNq"
