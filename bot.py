@@ -48,20 +48,31 @@ DOWNLOAD_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 SEEN_USERS: set[int] = set()
 
 TIKTOK_HOST_RE = re.compile(r"(^|\.)tiktok\.com$", re.IGNORECASE)
+INSTAGRAM_HOST_RE = re.compile(r"(^|\.)instagram\.com$", re.IGNORECASE)
+INSTAGRAM_MEDIA_PATH_RE = re.compile(
+    r"^/(?:reel|reels|p|tv|share/(?:reel|p))/", re.IGNORECASE
+)
 
 
-def is_valid_tiktok_url(value: str) -> bool:
+def get_supported_platform(value: str) -> str | None:
     try:
         parsed = urlparse(value.strip())
     except ValueError:
-        return False
-    return (
-        parsed.scheme in {"http", "https"}
-        and parsed.hostname is not None
-        and bool(TIKTOK_HOST_RE.search(parsed.hostname))
-        and parsed.username is None
-        and parsed.password is None
-    )
+        return None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return None
+    if TIKTOK_HOST_RE.search(parsed.hostname):
+        return "TikTok"
+    if INSTAGRAM_HOST_RE.search(parsed.hostname) and INSTAGRAM_MEDIA_PATH_RE.search(
+        parsed.path
+    ):
+        return "Instagram"
+    return None
 
 
 def subscription_keyboard() -> InlineKeyboardMarkup:
@@ -166,7 +177,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if query.message:
         await query.message.edit_text(
-            "✅ تم التحقق من اشتراكك، أرسل الآن رابط فيديو تيك توك 🎥"
+            "✅ تم التحقق، أرسل رابط فيديو من TikTok أو Instagram 🎥"
         )
         if query.from_user.id not in SEEN_USERS:
             SEEN_USERS.add(query.from_user.id)
@@ -277,7 +288,7 @@ async def normalize_video_for_snapchat(video_path: Path, directory: Path) -> Pat
     return output_path
 
 
-async def download_tiktok_video(
+async def download_social_video(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     message = update.effective_message
@@ -297,12 +308,15 @@ async def download_tiktok_video(
         return
 
     url = message.text.strip()
-    if not is_valid_tiktok_url(url):
-        await message.reply_text("❌ أرسل رابطًا صحيحًا من TikTok فقط 📎")
+    platform = get_supported_platform(url)
+    if not platform:
+        await message.reply_text(
+            "❌ أرسل رابط فيديو صحيحًا من TikTok أو Instagram فقط 📎"
+        )
         return
 
     progress_message = await message.reply_text("⏳ جاري تجهيز الفيديو...")
-    work_dir = Path(tempfile.mkdtemp(prefix="tiktok-", dir="/tmp"))
+    work_dir = Path(tempfile.mkdtemp(prefix="social-video-", dir="/tmp"))
     try:
         async with DOWNLOAD_SEMAPHORE:
             video_path = await download_video(url, work_dir)
@@ -326,9 +340,9 @@ async def download_tiktok_video(
             reply_markup=social_keyboard(context.bot.username),
         )
     except Exception:
-        logger.exception("Video download or upload failed")
+        logger.exception("%s video download or upload failed", platform)
         await message.reply_text(
-            "❌ تعذر تحميل الفيديو. قد يكون خاصًا أو كبيرًا جدًا؛ حاول رابطًا آخر."
+            "❌ تعذر تحميل الفيديو. تأكد أنه عام وغير مقيد، ثم حاول رابطًا آخر."
         )
     finally:
         try:
@@ -353,7 +367,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler, pattern="^check_subscription$"))
     app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, download_tiktok_video)
+        MessageHandler(filters.TEXT & ~filters.COMMAND, download_social_video)
     )
     app.add_error_handler(error_handler)
     return app
