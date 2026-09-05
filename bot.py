@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
+from imageio_ffmpeg import get_ffmpeg_exe
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatMemberStatus
 from telegram.error import BadRequest, Forbidden, TelegramError
@@ -38,6 +39,7 @@ SNAPCHAT_URL = "https://snapchat.com/t/d9GtFjtN"
 CHANNELS = ("@saudiJ0b", "@kh01ed", "@sama_learn")
 
 DOWNLOAD_TIMEOUT_SECONDS = int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "120"))
+VIDEO_PROCESS_TIMEOUT_SECONDS = int(os.getenv("VIDEO_PROCESS_TIMEOUT_SECONDS", "180"))
 MAX_VIDEO_BYTES = int(os.getenv("MAX_VIDEO_BYTES", str(45 * 1024 * 1024)))
 MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "2"))
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
@@ -212,6 +214,61 @@ async def download_video(url: str, directory: Path) -> Path:
     return video_path
 
 
+async def normalize_video_for_snapchat(video_path: Path, directory: Path) -> Path:
+    """Create a standards-compliant 9:16 MP4 that Snapchat handles consistently."""
+    output_path = directory / "snapchat-ready.mp4"
+    command = (
+        get_ffmpeg_exe(),
+        "-y",
+        "-i",
+        str(video_path),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0?",
+        "-vf",
+        "scale=720:1280:force_original_aspect_ratio=decrease,"
+        "pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,setsar=1",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "24",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-ar",
+        "48000",
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    )
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, stderr = await asyncio.wait_for(
+            process.communicate(), timeout=VIDEO_PROCESS_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.communicate()
+        raise RuntimeError("video normalization timed out")
+
+    if process.returncode != 0 or not output_path.exists():
+        detail = stderr.decode("utf-8", errors="replace")[-500:]
+        raise RuntimeError(f"ffmpeg normalization failed: {detail}")
+    if output_path.stat().st_size > MAX_VIDEO_BYTES:
+        raise RuntimeError("normalized video exceeds Telegram limit")
+    return output_path
+
+
 async def download_tiktok_video(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -241,6 +298,7 @@ async def download_tiktok_video(
     try:
         async with DOWNLOAD_SEMAPHORE:
             video_path = await download_video(url, work_dir)
+            video_path = await normalize_video_for_snapchat(video_path, work_dir)
         with video_path.open("rb") as video:
             await message.reply_video(
                 video=video,
