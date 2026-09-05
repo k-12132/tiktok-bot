@@ -36,7 +36,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 TIKTOK_URL = "https://www.tiktok.com/@kh01ed?_r=1&_t=ZS-99TrxV4Gtjc"
 SNAPCHAT_URL = "https://snapchat.com/t/d9GtFjtN"
-CHANNELS = ("@saudiJ0b", "@kh01ed", "@sama_learn")
+CHANNELS = ("@kh01ed",)
 
 DOWNLOAD_TIMEOUT_SECONDS = int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "120"))
 VIDEO_PROCESS_TIMEOUT_SECONDS = int(os.getenv("VIDEO_PROCESS_TIMEOUT_SECONDS", "180"))
