@@ -8,5 +8,7 @@ services:
     envVars:
       - key: BOT_TOKEN
         sync: false
+      - key: ADMIN_USER_IDS
+        sync: false
       - key: PYTHON_VERSION
         value: 3.12.8

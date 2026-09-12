@@ -1,15 +1,20 @@
 import asyncio
+import hashlib
 import logging
 import os
 import re
 import shutil
+import sqlite3
 import sys
 import tempfile
+import time
+from contextlib import contextmanager
 from pathlib import Path
-from urllib.parse import urlparse
+from typing import Iterator
+from urllib.parse import urlencode, urlparse
 
 from imageio_ffmpeg import get_ffmpeg_exe
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatMemberStatus
 from telegram.error import BadRequest, Forbidden, TelegramError
 from telegram.ext import (
@@ -44,6 +49,12 @@ DOWNLOAD_TIMEOUT_SECONDS = int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "120"))
 VIDEO_PROCESS_TIMEOUT_SECONDS = int(os.getenv("VIDEO_PROCESS_TIMEOUT_SECONDS", "180"))
 MAX_VIDEO_BYTES = int(os.getenv("MAX_VIDEO_BYTES", str(45 * 1024 * 1024)))
 MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "2"))
+BOT_DB_PATH = os.getenv("BOT_DB_PATH", "/tmp/tiktok-bot.sqlite3").strip()
+ADMIN_USER_IDS = {
+    int(value)
+    for value in os.getenv("ADMIN_USER_IDS", "").split(",")
+    if value.strip().isdigit()
+}
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 SEEN_USERS: set[int] = set()
 
@@ -52,6 +63,169 @@ INSTAGRAM_HOST_RE = re.compile(r"(^|\.)instagram\.com$", re.IGNORECASE)
 INSTAGRAM_MEDIA_PATH_RE = re.compile(
     r"^/(?:reel|reels|p|tv|share/(?:reel|p))/", re.IGNORECASE
 )
+
+
+class BotStore:
+    """Small SQLite store for referrals, usage metrics, and Telegram file IDs."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with self.connection() as connection:
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    invited_by INTEGER,
+                    referrals INTEGER NOT NULL DEFAULT 0,
+                    downloads INTEGER NOT NULL DEFAULT 0,
+                    first_seen INTEGER NOT NULL,
+                    last_seen INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS metrics (
+                    key TEXT PRIMARY KEY,
+                    value INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS video_cache (
+                    url_hash TEXT PRIMARY KEY,
+                    telegram_file_id TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                """
+            )
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.path, timeout=10)
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA busy_timeout=10000")
+        return connection
+
+    @contextmanager
+    def connection(self) -> Iterator[sqlite3.Connection]:
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
+    def register_user(self, user_id: int, invited_by: int | None = None) -> bool:
+        now = int(time.time())
+        with self.connection() as connection:
+            valid_inviter = None
+            if invited_by and invited_by != user_id:
+                exists = connection.execute(
+                    "SELECT 1 FROM users WHERE user_id = ?", (invited_by,)
+                ).fetchone()
+                if exists:
+                    valid_inviter = invited_by
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO users
+                    (user_id, invited_by, first_seen, last_seen)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_id, valid_inviter, now, now),
+            )
+            created = cursor.rowcount == 1
+            if created and valid_inviter:
+                connection.execute(
+                    "UPDATE users SET referrals = referrals + 1 WHERE user_id = ?",
+                    (valid_inviter,),
+                )
+            if not created:
+                connection.execute(
+                    "UPDATE users SET last_seen = ? WHERE user_id = ?",
+                    (now, user_id),
+                )
+        return created
+
+    def referral_count(self, user_id: int) -> int:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT referrals FROM users WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def record_download(self, user_id: int, *, cached: bool = False) -> None:
+        self.register_user(user_id)
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE users SET downloads = downloads + 1 WHERE user_id = ?",
+                (user_id,),
+            )
+            self._increment_metric(connection, "downloads_success")
+            if cached:
+                self._increment_metric(connection, "cache_hits")
+
+    def record_failure(self) -> None:
+        with self.connection() as connection:
+            self._increment_metric(connection, "downloads_failed")
+
+    @staticmethod
+    def _increment_metric(connection: sqlite3.Connection, key: str) -> None:
+        connection.execute(
+            """
+            INSERT INTO metrics (key, value) VALUES (?, 1)
+            ON CONFLICT(key) DO UPDATE SET value = value + 1
+            """,
+            (key,),
+        )
+
+    @staticmethod
+    def _url_hash(url: str) -> str:
+        return hashlib.sha256(url.strip().encode("utf-8")).hexdigest()
+
+    def cached_file_id(self, url: str) -> str | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT telegram_file_id FROM video_cache WHERE url_hash = ?",
+                (self._url_hash(url),),
+            ).fetchone()
+        return str(row[0]) if row else None
+
+    def cache_file(self, url: str, file_id: str, platform: str) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO video_cache
+                    (url_hash, telegram_file_id, platform, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (self._url_hash(url), file_id, platform, int(time.time())),
+            )
+
+    def remove_cached_file(self, url: str) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                "DELETE FROM video_cache WHERE url_hash = ?", (self._url_hash(url),)
+            )
+
+    def statistics(self) -> dict[str, int]:
+        with self.connection() as connection:
+            users = connection.execute(
+                """
+                SELECT COUNT(*), COALESCE(SUM(downloads), 0),
+                       COALESCE(SUM(referrals), 0)
+                FROM users
+                """
+            ).fetchone()
+            metrics = dict(connection.execute("SELECT key, value FROM metrics"))
+            cached_videos = connection.execute(
+                "SELECT COUNT(*) FROM video_cache"
+            ).fetchone()[0]
+        return {
+            "users": int(users[0]),
+            "downloads": int(users[1]),
+            "referrals": int(users[2]),
+            "failures": int(metrics.get("downloads_failed", 0)),
+            "cache_hits": int(metrics.get("cache_hits", 0)),
+            "cached_videos": int(cached_videos),
+        }
+
+
+STORE = BotStore(BOT_DB_PATH)
 
 
 def get_supported_platform(value: str) -> str | None:
@@ -92,7 +266,18 @@ def noon_ad_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def social_keyboard(bot_username: str) -> InlineKeyboardMarkup:
+def invite_link(bot_username: str, user_id: int) -> str:
+    return f"https://t.me/{bot_username}?start=ref_{user_id}"
+
+
+def social_keyboard(bot_username: str, user_id: int) -> InlineKeyboardMarkup:
+    personal_link = invite_link(bot_username, user_id)
+    share_url = "https://t.me/share/url?" + urlencode(
+        {
+            "url": personal_link,
+            "text": "حمّل مقاطع TikTok وInstagram بسهولة وبالصوت عبر هذا البوت 🎥",
+        }
+    )
     return InlineKeyboardMarkup(
         [
             [
@@ -101,20 +286,76 @@ def social_keyboard(bot_username: str) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    "🤝 شارك البوت مع أصدقائك",
-                    url=f"https://t.me/{bot_username}",
+                    "📤 شارك البوت مع أصدقائك",
+                    url=share_url,
                 )
             ],
+            [InlineKeyboardButton("🎁 عدد دعواتي", callback_data="my_referrals")],
         ]
     )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if user:
+        inviter = None
+        if context.args:
+            match = re.fullmatch(r"ref_(\d+)", context.args[0])
+            if match:
+                inviter = int(match.group(1))
+        STORE.register_user(user.id, inviter)
     await send_subscription_message(update)
 
 
+async def invite_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    user = update.effective_user
+    if not message or not user:
+        return
+    STORE.register_user(user.id)
+    count = STORE.referral_count(user.id)
+    await message.reply_text(
+        "🎁 رابط دعوتك الخاص\n\n"
+        f"👥 عدد الأشخاص الذين دعوتهم: {count}\n"
+        "شارك الرابط من الزر التالي:",
+        reply_markup=social_keyboard(context.bot.username, user.id),
+    )
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    user = update.effective_user
+    if not message or not user:
+        return
+    if not ADMIN_USER_IDS or user.id not in ADMIN_USER_IDS:
+        await message.reply_text("⛔ هذا الأمر متاح لمدير البوت فقط.")
+        return
+    stats = STORE.statistics()
+    await message.reply_text(
+        "📊 إحصائيات البوت منذ آخر تشغيل\n\n"
+        f"👥 المستخدمون: {stats['users']}\n"
+        f"✅ التحميلات الناجحة: {stats['downloads']}\n"
+        f"❌ التحميلات الفاشلة: {stats['failures']}\n"
+        f"🎁 الدعوات الناجحة: {stats['referrals']}\n"
+        f"♻️ فيديوهات أُعيد إرسالها من تيليجرام: {stats['cache_hits']}\n"
+        f"🗂️ الفيديوهات المحفوظة: {stats['cached_videos']}"
+    )
+
+
+async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    user = update.effective_user
+    if message and user:
+        await message.reply_text(
+            f"🆔 رقم حسابك في تيليجرام: `{user.id}`", parse_mode="Markdown"
+        )
+
+
 async def send_subscription_message(update: Update, extra_text: str = "") -> None:
-    text = "🚫 يجب الاشتراك في القنوات التالية لاستخدام البوت:"
+    text = (
+        "🎬 حمّل مقاطع TikTok وInstagram بسهولة وبالصوت!\n\n"
+        "📢 للبدء، اشترك في القناة التالية ثم اضغط زر التحقق:"
+    )
     if extra_text:
         text += f"\n\n⚠️ {extra_text}"
 
@@ -159,6 +400,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not query:
         return
     await query.answer()
+    if query.data == "my_referrals":
+        STORE.register_user(query.from_user.id)
+        count = STORE.referral_count(query.from_user.id)
+        if query.message:
+            await query.message.reply_text(
+                f"🎁 عدد دعواتك الناجحة: {count}\n\n"
+                "شارك رابطك الخاص من الزر التالي:",
+                reply_markup=social_keyboard(
+                    context.bot.username, query.from_user.id
+                ),
+            )
+        return
     if query.data != "check_subscription":
         return
 
@@ -183,7 +436,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             SEEN_USERS.add(query.from_user.id)
             await query.message.reply_text(
                 "🎉 تابعنا على تيك توك وسناب شات لمتابعة كل جديد 💡",
-                reply_markup=social_keyboard(context.bot.username),
+                reply_markup=social_keyboard(
+                    context.bot.username, query.from_user.id
+                ),
             )
 
 
@@ -301,6 +556,8 @@ async def download_social_video(
     if not message or not user or not message.text:
         return
 
+    STORE.register_user(user.id)
+
     missing, configuration_error = await get_missing_channels(context.bot, user.id)
     if configuration_error:
         await send_subscription_message(
@@ -320,6 +577,27 @@ async def download_social_video(
         )
         return
 
+    cached_file_id = STORE.cached_file_id(url)
+    if cached_file_id:
+        try:
+            await message.reply_video(video=cached_file_id, supports_streaming=True)
+            STORE.record_download(user.id, cached=True)
+            await message.reply_text(
+                "📢 إعلان\n\n"
+                "🛍️ تسوّق من نون ووفر أكثر!\n"
+                f"🎟️ كود الخصم: {NOON_DISCOUNT_CODE}\n\n"
+                "اضغط على الزر للانتقال إلى نون 👇",
+                reply_markup=noon_ad_keyboard(),
+            )
+            await message.reply_text(
+                "🎉 تم التحميل. شارك البوت مع أصدقائك من الزر التالي!",
+                reply_markup=social_keyboard(context.bot.username, user.id),
+            )
+            return
+        except BadRequest:
+            logger.info("Cached Telegram file is no longer valid; downloading again")
+            STORE.remove_cached_file(url)
+
     progress_message = await message.reply_text("⏳ جاري تجهيز الفيديو...")
     work_dir = Path(tempfile.mkdtemp(prefix="social-video-", dir="/tmp"))
     try:
@@ -327,12 +605,15 @@ async def download_social_video(
             video_path = await download_video(url, work_dir)
             video_path = await normalize_video_for_snapchat(video_path, work_dir)
         with video_path.open("rb") as video:
-            await message.reply_video(
+            sent_video = await message.reply_video(
                 video=video,
                 supports_streaming=True,
                 read_timeout=120,
                 write_timeout=120,
             )
+        if sent_video.video:
+            STORE.cache_file(url, sent_video.video.file_id, platform)
+        STORE.record_download(user.id)
         await message.reply_text(
             "📢 إعلان\n\n"
             "🛍️ تسوّق من نون ووفر أكثر!\n"
@@ -341,11 +622,12 @@ async def download_social_video(
             reply_markup=noon_ad_keyboard(),
         )
         await message.reply_text(
-            "🎉 تم التحميل. تابعنا على تيك توك وسناب لمزيد من المحتوى!",
-            reply_markup=social_keyboard(context.bot.username),
+            "🎉 تم التحميل. شارك البوت مع أصدقائك وتابعنا للمزيد!",
+            reply_markup=social_keyboard(context.bot.username, user.id),
         )
     except Exception:
         logger.exception("%s video download or upload failed", platform)
+        STORE.record_failure()
         await message.reply_text(
             "❌ تعذر تحميل الفيديو. تأكد أنه عام وغير مقيد، ثم حاول رابطًا آخر."
         )
@@ -365,12 +647,30 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 
+async def post_init(application: Application) -> None:
+    await application.bot.set_my_commands(
+        [
+            BotCommand("start", "بدء استخدام البوت"),
+            BotCommand("invite", "دعوة الأصدقاء وعرض إحالاتك"),
+            BotCommand("id", "عرض رقم حسابك"),
+            BotCommand("stats", "إحصائيات المدير"),
+        ]
+    )
+
+
 def build_application() -> Application:
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN environment variable is required")
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_handler, pattern="^check_subscription$"))
+    app.add_handler(CommandHandler("invite", invite_command))
+    app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("id", id_command))
+    app.add_handler(
+        CallbackQueryHandler(
+            button_handler, pattern="^(check_subscription|my_referrals)$"
+        )
+    )
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, download_social_video)
     )
