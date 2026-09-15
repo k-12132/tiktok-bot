@@ -49,6 +49,9 @@ DOWNLOAD_TIMEOUT_SECONDS = int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "120"))
 VIDEO_PROCESS_TIMEOUT_SECONDS = int(os.getenv("VIDEO_PROCESS_TIMEOUT_SECONDS", "180"))
 MAX_VIDEO_BYTES = int(os.getenv("MAX_VIDEO_BYTES", str(45 * 1024 * 1024)))
 MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "2"))
+DOWNLOAD_FRAGMENT_CONCURRENCY = int(os.getenv("DOWNLOAD_FRAGMENT_CONCURRENCY", "4"))
+TARGET_VIDEO_WIDTH = int(os.getenv("TARGET_VIDEO_WIDTH", "720"))
+TARGET_VIDEO_HEIGHT = int(os.getenv("TARGET_VIDEO_HEIGHT", "1280"))
 BOT_DB_PATH = os.getenv("BOT_DB_PATH", "/tmp/tiktok-bot.sqlite3").strip()
 ADMIN_USER_IDS = {
     int(value)
@@ -57,6 +60,7 @@ ADMIN_USER_IDS = {
 }
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 SEEN_USERS: set[int] = set()
+VIDEO_CACHE_VERSION = "portrait-v2"
 
 TIKTOK_HOST_RE = re.compile(r"(^|\.)tiktok\.com$", re.IGNORECASE)
 INSTAGRAM_HOST_RE = re.compile(r"(^|\.)instagram\.com$", re.IGNORECASE)
@@ -175,7 +179,10 @@ class BotStore:
 
     @staticmethod
     def _url_hash(url: str) -> str:
-        return hashlib.sha256(url.strip().encode("utf-8")).hexdigest()
+        # Bump VIDEO_CACHE_VERSION whenever the generated media format changes.
+        # This prevents Telegram from reusing an older file_id with bad geometry.
+        value = f"{VIDEO_CACHE_VERSION}:{url.strip()}"
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
     def cached_file_id(self, url: str) -> str | None:
         with self.connection() as connection:
@@ -450,6 +457,14 @@ async def download_video(url: str, directory: Path) -> Path:
         "yt_dlp",
         "--no-playlist",
         "--no-progress",
+        "--concurrent-fragments",
+        str(DOWNLOAD_FRAGMENT_CONCURRENCY),
+        "--retries",
+        "2",
+        "--fragment-retries",
+        "2",
+        "--socket-timeout",
+        "20",
         "--max-filesize",
         str(MAX_VIDEO_BYTES),
         "--ffmpeg-location",
@@ -458,8 +473,12 @@ async def download_video(url: str, directory: Path) -> Path:
         "mp4",
         "--format",
         (
+            # Prefer one ready-to-use MP4. This avoids downloading two streams
+            # and merging them when TikTok/Instagram already offers a combined
+            # file, which is considerably faster on small Render workers.
+            "best[ext=mp4][vcodec!=none][acodec!=none]/"
             "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
-            "bestvideo+bestaudio/best[ext=mp4][acodec!=none]/"
+            "bestvideo+bestaudio/"
             "best[acodec!=none]"
         ),
         "--output",
@@ -494,7 +513,7 @@ async def download_video(url: str, directory: Path) -> Path:
 
 
 async def normalize_video_for_snapchat(video_path: Path, directory: Path) -> Path:
-    """Create a standards-compliant 9:16 MP4 that Snapchat handles consistently."""
+    """Create a standards-compliant 9:16 MP4 with unambiguous display geometry."""
     output_path = directory / "snapchat-ready.mp4"
     command = (
         get_ffmpeg_exe(),
@@ -506,8 +525,12 @@ async def normalize_video_for_snapchat(video_path: Path, directory: Path) -> Pat
         "-map",
         "0:a:0?",
         "-vf",
-        "scale=720:1280:force_original_aspect_ratio=decrease,"
-        "pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,setsar=1",
+        (
+            f"scale={TARGET_VIDEO_WIDTH}:{TARGET_VIDEO_HEIGHT}:"
+            "force_original_aspect_ratio=decrease:force_divisible_by=2,"
+            f"pad={TARGET_VIDEO_WIDTH}:{TARGET_VIDEO_HEIGHT}:"
+            "(ow-iw)/2:(oh-ih)/2:black,setsar=1,setdar=9/16"
+        ),
         "-c:v",
         "libx264",
         "-preset",
@@ -516,6 +539,8 @@ async def normalize_video_for_snapchat(video_path: Path, directory: Path) -> Pat
         "27",
         "-pix_fmt",
         "yuv420p",
+        "-metadata:s:v:0",
+        "rotate=0",
         "-c:a",
         "aac",
         "-b:a",
@@ -608,6 +633,8 @@ async def download_social_video(
             sent_video = await message.reply_video(
                 video=video,
                 supports_streaming=True,
+                width=TARGET_VIDEO_WIDTH,
+                height=TARGET_VIDEO_HEIGHT,
                 read_timeout=120,
                 write_timeout=120,
             )
