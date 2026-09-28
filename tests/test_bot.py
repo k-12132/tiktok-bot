@@ -1,8 +1,11 @@
 import tempfile
+import subprocess
 import unittest
 from pathlib import Path
 
-from bot import BotStore, get_supported_platform, invite_link
+from imageio_ffmpeg import get_ffmpeg_exe
+
+from bot import BotStore, get_supported_platform, invite_link, is_ready_portrait_video
 
 
 class BotStoreTests(unittest.TestCase):
@@ -53,6 +56,20 @@ class PlatformTests(unittest.TestCase):
             invite_link("demo_bot", 12345),
             "https://t.me/demo_bot?start=ref_12345",
         )
+
+
+class PortraitFastPathTests(unittest.IsolatedAsyncioTestCase):
+    async def test_compatible_portrait_skips_encoding_and_landscape_does_not(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for size, expected in (("720x1280", True), ("1280x720", False)):
+                path = Path(directory) / f"{size}.mp4"
+                subprocess.run(
+                    [get_ffmpeg_exe(), "-v", "error", "-f", "lavfi", "-i",
+                     f"color=c=black:s={size}:d=0.1", "-c:v", "libx264",
+                     "-pix_fmt", "yuv420p", "-y", str(path)],
+                    check=True, capture_output=True,
+                )
+                self.assertEqual(await is_ready_portrait_video(path), expected)
 
 
 if __name__ == "__main__":

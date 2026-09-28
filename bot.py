@@ -573,6 +573,36 @@ async def normalize_video_for_snapchat(video_path: Path, directory: Path) -> Pat
     return output_path
 
 
+async def is_ready_portrait_video(video_path: Path) -> bool:
+    """Skip expensive encoding only for an unambiguous, compatible MP4."""
+    if video_path.suffix.lower() != ".mp4":
+        return False
+    process = await asyncio.create_subprocess_exec(
+        get_ffmpeg_exe(), "-hide_banner", "-i", str(video_path),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, stderr = await asyncio.wait_for(process.communicate(), timeout=15)
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.communicate()
+        return False
+    info = stderr.decode("utf-8", errors="replace")
+    video_lines = [line for line in info.splitlines() if "Video:" in line and "Stream #" in line]
+    audio_lines = [line for line in info.splitlines() if "Audio:" in line and "Stream #" in line]
+    if len(video_lines) != 1 or len(audio_lines) > 1:
+        return False
+    video = video_lines[0]
+    return (
+        bool(re.search(r"Video: h264\b", video))
+        and "yuv420p" in video
+        and bool(re.search(rf"\b{TARGET_VIDEO_WIDTH}x{TARGET_VIDEO_HEIGHT}\b", video))
+        and "[SAR 1:1 DAR 9:16]" in video
+        and not re.search(r"(?:rotate\s*:|displaymatrix: rotation of)", info, re.IGNORECASE)
+        and (not audio_lines or bool(re.search(r"Audio: aac\b", audio_lines[0])))
+    )
+
+
 async def download_social_video(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -628,7 +658,8 @@ async def download_social_video(
     try:
         async with DOWNLOAD_SEMAPHORE:
             video_path = await download_video(url, work_dir)
-            video_path = await normalize_video_for_snapchat(video_path, work_dir)
+            if not await is_ready_portrait_video(video_path):
+                video_path = await normalize_video_for_snapchat(video_path, work_dir)
         with video_path.open("rb") as video:
             sent_video = await message.reply_video(
                 video=video,
