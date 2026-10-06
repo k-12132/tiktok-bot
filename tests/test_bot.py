@@ -1,3 +1,10 @@
+import asyncio
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
+from contextlib import ExitStack
+
+import bot
 import tempfile
 import subprocess
 import unittest
@@ -72,5 +79,163 @@ class PortraitFastPathTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await is_ready_portrait_video(path), expected)
 
 
+class VideoPerformanceTests(unittest.IsolatedAsyncioTestCase):
+    async def run_request(self, *, ready=True, cached=False, failure=None,
+                          invalid_cache=False, cancelled=False, followup_failure=None,
+                          platform="Instagram"):
+        self.now = 0.0
+        progress = SimpleNamespace(delete=AsyncMock())
+        store = Mock()
+        store.cached_file_id.return_value = "cached-id" if cached else None
+        message = SimpleNamespace(
+            text="https://www.instagram.com/reel/private-query/?secret=hidden",
+            reply_text=AsyncMock(return_value=progress),
+        )
+        if platform == "TikTok":
+            message.text = "https://www.tiktok.com/@demo/video/123"
+        async def reply_text(text, **kwargs):
+            if followup_failure and text.startswith("📢"):
+                raise followup_failure("follow-up error with private-query secret 123456")
+            return progress
+        message.reply_text.side_effect = reply_text
+        update = SimpleNamespace(effective_message=message,
+                                 effective_user=SimpleNamespace(id=123456))
+        context = SimpleNamespace(bot=SimpleNamespace(username="demo_bot"))
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            media = Path(directory) / "video.mp4"
+            media.write_bytes(b"media")
+            async def download(*args):
+                self.now += 2
+                if failure == "download":
+                    raise RuntimeError("download error")
+                return media
+            async def probe(*args):
+                self.now += 0.25
+                return ready
+            async def normalize(*args):
+                self.now += 3
+                return media
+            async def send(*args, **kwargs):
+                if kwargs["video"] == "cached-id":
+                    self.now += 0.5
+                    if invalid_cache:
+                        raise bot.BadRequest("invalid file")
+                else:
+                    self.now += 4
+                if cancelled:
+                    raise asyncio.CancelledError()
+                if failure == "upload":
+                    raise RuntimeError("upload error")
+                return SimpleNamespace(video=SimpleNamespace(file_id="sent-id"))
+            message.reply_video = AsyncMock(side_effect=send)
+            for name, value in {
+                "STORE": store,
+                "DOWNLOAD_SEMAPHORE": asyncio.Semaphore(1),
+                "get_missing_channels": AsyncMock(return_value=([], False)),
+                "download_video": AsyncMock(side_effect=download),
+                "is_ready_portrait_video": AsyncMock(side_effect=probe),
+                "normalize_video_for_snapchat": AsyncMock(side_effect=normalize),
+            }.items():
+                stack.enter_context(patch.object(bot, name, value))
+            stack.enter_context(patch.object(bot.time, "perf_counter", side_effect=lambda: self.now))
+            log = stack.enter_context(patch.object(bot.logger, "info"))
+            stack.enter_context(patch.object(bot.logger, "exception"))
+            if cancelled:
+                with self.assertRaises(asyncio.CancelledError):
+                    await bot.download_social_video(update, context)
+            else:
+                await bot.download_social_video(update, context)
+            records = [call.args[1] for call in log.call_args_list
+                       if call.args[0] == "video_performance %s"]
+            self.assertEqual(len(records), 1)
+            self.assertNotIn("private-query", records[0])
+            self.assertNotIn("123456", records[0])
+            self.assertNotIn("secret", records[0])
+            self.assertEqual(bot.DOWNLOAD_SEMAPHORE._value, 1)
+            self.normalizer_calls = bot.normalize_video_for_snapchat.await_count
+            self.download_calls = bot.download_video.await_count
+            self.store = store
+            self.video_calls = message.reply_video.await_count
+            self.reply_text_calls = message.reply_text.await_count
+            return json.loads(records[0])
+
+    async def test_followup_errors_do_not_retry_or_fail_delivered_video(self):
+        for platform in ("TikTok", "Instagram"):
+            for cached, ready, route in ((True, True, "cache"),
+                                          (False, True, "direct"),
+                                          (False, False, "normalized")):
+                for error in (bot.BadRequest, bot.TelegramError):
+                    with self.subTest(platform=platform, route=route, error=error):
+                        result = await self.run_request(
+                            cached=cached, ready=ready, platform=platform,
+                            followup_failure=error)
+                        self.assertEqual(result["platform"], platform)
+                        self.assertEqual(result["route"], route)
+                        self.assertEqual(result["result"], "success")
+                        self.assertIsNone(result["failed_stage"])
+                        self.assertEqual(self.video_calls, 1)
+                        self.assertEqual(self.download_calls, 0 if cached else 1)
+                        self.store.remove_cached_file.assert_not_called()
+                        self.store.record_failure.assert_not_called()
+                        self.store.record_download.assert_called_once_with(
+                            123456, **({"cached": True} if cached else {}))
+                        self.assertEqual(self.reply_text_calls, 2 if cached else 3)
+
+    async def test_direct_stage_timings(self):
+        result = await self.run_request()
+        self.assertEqual(result["route"], "direct")
+        self.assertEqual(result["result"], "success")
+        self.assertEqual(result["platform"], "Instagram")
+        self.assertEqual(result["bytes_sent"], 5)
+        self.assertEqual(result["stage_ms"], dict(queue=0, download=2000,
+                         probe=250, normalize=0, upload=4000, cache_send=0))
+        self.assertEqual(result["total_ms"], 6250)
+        self.assertEqual(self.normalizer_calls, 0)
+
+    async def test_normalized_route(self):
+        result = await self.run_request(ready=False)
+        self.assertEqual(result["route"], "normalized")
+        self.assertEqual(result["stage_ms"]["normalize"], 3000)
+        self.assertEqual(result["total_ms"], 9250)
+        self.assertEqual(self.normalizer_calls, 1)
+
+    async def test_cache_does_not_download_or_upload(self):
+        result = await self.run_request(cached=True)
+        self.assertEqual(result["route"], "cache")
+        self.assertEqual(result["result"], "success")
+        self.assertEqual(result["stage_ms"]["cache_send"], 500)
+        self.assertEqual(result["stage_ms"]["upload"], 0)
+        self.assertIsNone(result["bytes_sent"])
+        self.assertEqual(self.download_calls, 0)
+
+    async def test_upload_failure_is_measured(self):
+        result = await self.run_request(failure="upload")
+        self.assertEqual(result["result"], "failed")
+        self.assertEqual(result["failed_stage"], "upload")
+        self.assertEqual(result["stage_ms"]["upload"], 4000)
+        self.store.record_failure.assert_called_once()
+
+    async def test_download_failure_releases_slot(self):
+        result = await self.run_request(failure="download")
+        self.assertEqual(result["failed_stage"], "download")
+        self.assertEqual(result["stage_ms"]["download"], 2000)
+        self.assertEqual(result["stage_ms"]["upload"], 0)
+
+    async def test_invalid_cache_falls_back_with_one_summary(self):
+        result = await self.run_request(cached=True, invalid_cache=True)
+        self.assertEqual(result["route"], "direct")
+        self.assertEqual(result["result"], "success")
+        self.assertIsNone(result["failed_stage"])
+        self.assertEqual(result["stage_ms"]["cache_send"], 500)
+        self.store.remove_cached_file.assert_called_once()
+
+    async def test_cancellation_still_logs_failure(self):
+        result = await self.run_request(cancelled=True)
+        self.assertEqual(result["result"], "failed")
+        self.assertEqual(result["failed_stage"], "upload")
+
+
 if __name__ == "__main__":
     unittest.main()
+
+

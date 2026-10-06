@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
@@ -603,6 +604,68 @@ async def is_ready_portrait_video(video_path: Path) -> bool:
     )
 
 
+async def send_download_followups(message, bot_username: str, user_id: int) -> None:
+    """A failed follow-up must never retry or invalidate a delivered video."""
+    followups = (
+        (
+            "📢 إعلان\n\n"
+            "🛍️ تسوّق من نون ووفر أكثر!\n"
+            f"🎟️ كود الخصم: {NOON_DISCOUNT_CODE}\n\n"
+            "اضغط على الزر للانتقال إلى نون 👇",
+            noon_ad_keyboard(),
+        ),
+        (
+            "🎉 تم التحميل. شارك البوت مع أصدقائك وتابعنا للمزيد!",
+            social_keyboard(bot_username, user_id),
+        ),
+    )
+    for text, keyboard in followups:
+        try:
+            await message.reply_text(text, reply_markup=keyboard)
+        except TelegramError:
+            # Do not include exception text, URLs, tokens, or user identifiers.
+            logger.warning("Video follow-up message failed")
+
+
+class VideoPerformance:
+    """Measure media stages without retaining URLs, credentials, or user IDs."""
+
+    def __init__(self, platform: str) -> None:
+        self.platform = platform
+        self.started = time.perf_counter()
+        self.route = "pending"
+        self.result = "failed"
+        self.failed_stage = None
+        self.bytes_sent = None
+        self.timings = dict.fromkeys(
+            ("queue", "download", "probe", "normalize", "upload", "cache_send"), 0.0
+        )
+
+    @contextmanager
+    def stage(self, name: str) -> Iterator[None]:
+        started = time.perf_counter()
+        try:
+            yield
+        except BaseException:
+            self.failed_stage = name
+            raise
+        finally:
+            self.timings[name] += time.perf_counter() - started
+
+    def log(self) -> None:
+        payload = {
+            "platform": self.platform,
+            "route": self.route,
+            "result": self.result,
+            "failed_stage": self.failed_stage,
+            "bytes_sent": self.bytes_sent,
+            "stage_ms": {key: round(value * 1000, 2)
+                         for key, value in self.timings.items()},
+            "total_ms": round((time.perf_counter() - self.started) * 1000, 2),
+        }
+        logger.info("video_performance %s", json.dumps(payload, sort_keys=True))
+
+
 async def download_social_video(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -632,69 +695,72 @@ async def download_social_video(
         )
         return
 
-    cached_file_id = STORE.cached_file_id(url)
-    if cached_file_id:
-        try:
-            await message.reply_video(video=cached_file_id, supports_streaming=True)
-            STORE.record_download(user.id, cached=True)
-            await message.reply_text(
-                "📢 إعلان\n\n"
-                "🛍️ تسوّق من نون ووفر أكثر!\n"
-                f"🎟️ كود الخصم: {NOON_DISCOUNT_CODE}\n\n"
-                "اضغط على الزر للانتقال إلى نون 👇",
-                reply_markup=noon_ad_keyboard(),
-            )
-            await message.reply_text(
-                "🎉 تم التحميل. شارك البوت مع أصدقائك من الزر التالي!",
-                reply_markup=social_keyboard(context.bot.username, user.id),
-            )
-            return
-        except BadRequest:
-            logger.info("Cached Telegram file is no longer valid; downloading again")
-            STORE.remove_cached_file(url)
-
-    progress_message = await message.reply_text("⏳ جاري تجهيز الفيديو...")
-    work_dir = Path(tempfile.mkdtemp(prefix="social-video-", dir="/tmp"))
+    performance = VideoPerformance(platform)
     try:
-        async with DOWNLOAD_SEMAPHORE:
-            video_path = await download_video(url, work_dir)
-            if not await is_ready_portrait_video(video_path):
-                video_path = await normalize_video_for_snapchat(video_path, work_dir)
-        with video_path.open("rb") as video:
-            sent_video = await message.reply_video(
-                video=video,
-                supports_streaming=True,
-                width=TARGET_VIDEO_WIDTH,
-                height=TARGET_VIDEO_HEIGHT,
-                read_timeout=120,
-                write_timeout=120,
-            )
-        if sent_video.video:
-            STORE.cache_file(url, sent_video.video.file_id, platform)
-        STORE.record_download(user.id)
-        await message.reply_text(
-            "📢 إعلان\n\n"
-            "🛍️ تسوّق من نون ووفر أكثر!\n"
-            f"🎟️ كود الخصم: {NOON_DISCOUNT_CODE}\n\n"
-            "اضغط على الزر للانتقال إلى نون 👇",
-            reply_markup=noon_ad_keyboard(),
-        )
-        await message.reply_text(
-            "🎉 تم التحميل. شارك البوت مع أصدقائك وتابعنا للمزيد!",
-            reply_markup=social_keyboard(context.bot.username, user.id),
-        )
-    except Exception:
-        logger.exception("%s video download or upload failed", platform)
-        STORE.record_failure()
-        await message.reply_text(
-            "❌ تعذر تحميل الفيديو. تأكد أنه عام وغير مقيد، ثم حاول رابطًا آخر."
-        )
-    finally:
+        cached_file_id = STORE.cached_file_id(url)
+        if cached_file_id:
+            performance.route = "cache"
+            try:
+                with performance.stage("cache_send"):
+                    await message.reply_video(video=cached_file_id, supports_streaming=True)
+            except BadRequest:
+                logger.info("Cached Telegram file is no longer valid; downloading again")
+                STORE.remove_cached_file(url)
+                performance.failed_stage = None
+            else:
+                performance.result = "success"
+                STORE.record_download(user.id, cached=True)
+                await send_download_followups(message, context.bot.username, user.id)
+                return
+
+        performance.route = "pending"
+        performance.result = "failed"
+        progress_message = await message.reply_text("⏳ جاري تجهيز الفيديو...")
+        work_dir = Path(tempfile.mkdtemp(prefix="social-video-", dir="/tmp"))
         try:
-            await progress_message.delete()
-        except TelegramError:
-            pass
-        shutil.rmtree(work_dir, ignore_errors=True)
+            with performance.stage("queue"):
+                await DOWNLOAD_SEMAPHORE.acquire()
+            try:
+                with performance.stage("download"):
+                    video_path = await download_video(url, work_dir)
+                with performance.stage("probe"):
+                    ready = await is_ready_portrait_video(video_path)
+                performance.route = "direct" if ready else "normalized"
+                if not ready:
+                    with performance.stage("normalize"):
+                        video_path = await normalize_video_for_snapchat(video_path, work_dir)
+            finally:
+                DOWNLOAD_SEMAPHORE.release()
+            performance.bytes_sent = video_path.stat().st_size
+            with performance.stage("upload"):
+                with video_path.open("rb") as video:
+                    sent_video = await message.reply_video(
+                        video=video,
+                        supports_streaming=True,
+                        width=TARGET_VIDEO_WIDTH,
+                        height=TARGET_VIDEO_HEIGHT,
+                        read_timeout=120,
+                        write_timeout=120,
+                    )
+            performance.result = "success"
+            if sent_video.video:
+                STORE.cache_file(url, sent_video.video.file_id, platform)
+            STORE.record_download(user.id)
+            await send_download_followups(message, context.bot.username, user.id)
+        except Exception:
+            logger.exception("%s video download or upload failed", platform)
+            STORE.record_failure()
+            await message.reply_text(
+                "❌ تعذر تحميل الفيديو. تأكد أنه عام وغير مقيد، ثم حاول رابطًا آخر."
+            )
+        finally:
+            try:
+                await progress_message.delete()
+            except TelegramError:
+                pass
+            shutil.rmtree(work_dir, ignore_errors=True)
+    finally:
+        performance.log()
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -742,3 +808,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
