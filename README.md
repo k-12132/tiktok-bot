@@ -50,3 +50,12 @@ cache hits separate from new downloads and compare similar durations/file sizes.
 The direct route should have zero normalization time. These logs measure latency;
 they do not establish platform reliability or faster production delivery until
 real requests have been observed.
+
+
+### Delivery and follow-up failures
+
+A successful video delivery is counted once. Advertisement and sharing messages
+are best-effort follow-ups: Telegram errors are logged separately without error
+text or identifiers. They do not invalidate the cache, retry the video, increment
+download failures, or change the video performance result. Invalid-cache fallback
+is only triggered by a BadRequest from the cached video send itself.

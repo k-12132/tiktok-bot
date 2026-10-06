@@ -81,7 +81,8 @@ class PortraitFastPathTests(unittest.IsolatedAsyncioTestCase):
 
 class VideoPerformanceTests(unittest.IsolatedAsyncioTestCase):
     async def run_request(self, *, ready=True, cached=False, failure=None,
-                          invalid_cache=False, cancelled=False):
+                          invalid_cache=False, cancelled=False, followup_failure=None,
+                          platform="Instagram"):
         self.now = 0.0
         progress = SimpleNamespace(delete=AsyncMock())
         store = Mock()
@@ -90,6 +91,13 @@ class VideoPerformanceTests(unittest.IsolatedAsyncioTestCase):
             text="https://www.instagram.com/reel/private-query/?secret=hidden",
             reply_text=AsyncMock(return_value=progress),
         )
+        if platform == "TikTok":
+            message.text = "https://www.tiktok.com/@demo/video/123"
+        async def reply_text(text, **kwargs):
+            if followup_failure and text.startswith("📢"):
+                raise followup_failure("follow-up error with private-query secret 123456")
+            return progress
+        message.reply_text.side_effect = reply_text
         update = SimpleNamespace(effective_message=message,
                                  effective_user=SimpleNamespace(id=123456))
         context = SimpleNamespace(bot=SimpleNamespace(username="demo_bot"))
@@ -147,7 +155,31 @@ class VideoPerformanceTests(unittest.IsolatedAsyncioTestCase):
             self.normalizer_calls = bot.normalize_video_for_snapchat.await_count
             self.download_calls = bot.download_video.await_count
             self.store = store
+            self.video_calls = message.reply_video.await_count
+            self.reply_text_calls = message.reply_text.await_count
             return json.loads(records[0])
+
+    async def test_followup_errors_do_not_retry_or_fail_delivered_video(self):
+        for platform in ("TikTok", "Instagram"):
+            for cached, ready, route in ((True, True, "cache"),
+                                          (False, True, "direct"),
+                                          (False, False, "normalized")):
+                for error in (bot.BadRequest, bot.TelegramError):
+                    with self.subTest(platform=platform, route=route, error=error):
+                        result = await self.run_request(
+                            cached=cached, ready=ready, platform=platform,
+                            followup_failure=error)
+                        self.assertEqual(result["platform"], platform)
+                        self.assertEqual(result["route"], route)
+                        self.assertEqual(result["result"], "success")
+                        self.assertIsNone(result["failed_stage"])
+                        self.assertEqual(self.video_calls, 1)
+                        self.assertEqual(self.download_calls, 0 if cached else 1)
+                        self.store.remove_cached_file.assert_not_called()
+                        self.store.record_failure.assert_not_called()
+                        self.store.record_download.assert_called_once_with(
+                            123456, **({"cached": True} if cached else {}))
+                        self.assertEqual(self.reply_text_calls, 2 if cached else 3)
 
     async def test_direct_stage_timings(self):
         result = await self.run_request()
@@ -205,4 +237,5 @@ class VideoPerformanceTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 

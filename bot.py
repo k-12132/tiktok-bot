@@ -604,6 +604,29 @@ async def is_ready_portrait_video(video_path: Path) -> bool:
     )
 
 
+async def send_download_followups(message, bot_username: str, user_id: int) -> None:
+    """A failed follow-up must never retry or invalidate a delivered video."""
+    followups = (
+        (
+            "📢 إعلان\n\n"
+            "🛍️ تسوّق من نون ووفر أكثر!\n"
+            f"🎟️ كود الخصم: {NOON_DISCOUNT_CODE}\n\n"
+            "اضغط على الزر للانتقال إلى نون 👇",
+            noon_ad_keyboard(),
+        ),
+        (
+            "🎉 تم التحميل. شارك البوت مع أصدقائك وتابعنا للمزيد!",
+            social_keyboard(bot_username, user_id),
+        ),
+    )
+    for text, keyboard in followups:
+        try:
+            await message.reply_text(text, reply_markup=keyboard)
+        except TelegramError:
+            # Do not include exception text, URLs, tokens, or user identifiers.
+            logger.warning("Video follow-up message failed")
+
+
 class VideoPerformance:
     """Measure media stages without retaining URLs, credentials, or user IDs."""
 
@@ -680,24 +703,15 @@ async def download_social_video(
             try:
                 with performance.stage("cache_send"):
                     await message.reply_video(video=cached_file_id, supports_streaming=True)
-                performance.result = "success"
-                STORE.record_download(user.id, cached=True)
-                await message.reply_text(
-                    "📢 إعلان\n\n"
-                    "🛍️ تسوّق من نون ووفر أكثر!\n"
-                    f"🎟️ كود الخصم: {NOON_DISCOUNT_CODE}\n\n"
-                    "اضغط على الزر للانتقال إلى نون 👇",
-                    reply_markup=noon_ad_keyboard(),
-                )
-                await message.reply_text(
-                    "🎉 تم التحميل. شارك البوت مع أصدقائك من الزر التالي!",
-                    reply_markup=social_keyboard(context.bot.username, user.id),
-                )
-                return
             except BadRequest:
                 logger.info("Cached Telegram file is no longer valid; downloading again")
                 STORE.remove_cached_file(url)
                 performance.failed_stage = None
+            else:
+                performance.result = "success"
+                STORE.record_download(user.id, cached=True)
+                await send_download_followups(message, context.bot.username, user.id)
+                return
 
         performance.route = "pending"
         performance.result = "failed"
@@ -732,17 +746,7 @@ async def download_social_video(
             if sent_video.video:
                 STORE.cache_file(url, sent_video.video.file_id, platform)
             STORE.record_download(user.id)
-            await message.reply_text(
-                "📢 إعلان\n\n"
-                "🛍️ تسوّق من نون ووفر أكثر!\n"
-                f"🎟️ كود الخصم: {NOON_DISCOUNT_CODE}\n\n"
-                "اضغط على الزر للانتقال إلى نون 👇",
-                reply_markup=noon_ad_keyboard(),
-            )
-            await message.reply_text(
-                "🎉 تم التحميل. شارك البوت مع أصدقائك وتابعنا للمزيد!",
-                reply_markup=social_keyboard(context.bot.username, user.id),
-            )
+            await send_download_followups(message, context.bot.username, user.id)
         except Exception:
             logger.exception("%s video download or upload failed", platform)
             STORE.record_failure()
@@ -804,4 +808,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
