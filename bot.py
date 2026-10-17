@@ -615,8 +615,14 @@ async def send_download_followups(message, bot_username: str, user_id: int) -> N
             noon_ad_keyboard(),
         ),
         (
-            "🎉 تم التحميل. شارك البوت مع أصدقائك وتابعنا للمزيد!",
-            social_keyboard(bot_username, user_id),
+            "👻 تبي تحمّل ستوري سناب شات؟\n\n"
+            "جرّب Download bot from Snapchat 📥\n"
+            "أرسل رابط الستوري العام واستلم الصور والفيديوهات داخل تيليجرام!\n\n"
+            "اضغط الزر وجرّبه الآن 👇",
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("👻 تحميل ستوري سناب شات", url="https://t.me/Khsnapchat_bot")],
+                *social_keyboard(bot_username, user_id).inline_keyboard,
+            ]),
         ),
     )
     for text, keyboard in followups:
