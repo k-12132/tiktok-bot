@@ -59,3 +59,9 @@ are best-effort follow-ups: Telegram errors are logged separately without error
 text or identifiers. They do not invalidate the cache, retry the video, increment
 download failures, or change the video performance result. Invalid-cache fallback
 is only triggered by a BadRequest from the cached video send itself.
+
+## Required Snapchat activation
+
+Configure both services before deploying the TikTok gate. Set the same randomly generated `BOT_ACTIVATION_SECRET` (32+ characters) in both services. The activation link automatically includes the return bot username; `TIKTOK_BOT_USERNAME` is an optional fallback for old activation links. Keep secrets in server environment settings only. Deploy the Snapchat companion first.
+
+Users join @kh01ed, open @Khsnapchat_bot using the activation button, press Start, then use its return button. Signed receipts expire in ten minutes and are bound to the Telegram user ID. TikTok stores activations in SQLite; use a persistent BOT_DB_PATH to retain them after deployments. This verifies starting Snapchat once, not whether it stays unblocked afterward. Missing or mismatched secrets deny new activations.

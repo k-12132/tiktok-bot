@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Iterator
 from urllib.parse import urlencode, urlparse
 
+from activation import verify
 from imageio_ffmpeg import get_ffmpeg_exe
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatMemberStatus
@@ -45,6 +46,7 @@ SNAPCHAT_URL = "https://snapchat.com/t/d9GtFjtN"
 NOON_URL = "https://s.noon.com/iU1YAlSF0Mw"
 NOON_DISCOUNT_CODE = "Hoob"
 CHANNELS = ("@kh01ed",)
+ACTIVATION_SECRET = os.getenv("BOT_ACTIVATION_SECRET", "").strip()
 
 DOWNLOAD_TIMEOUT_SECONDS = int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "120"))
 VIDEO_PROCESS_TIMEOUT_SECONDS = int(os.getenv("VIDEO_PROCESS_TIMEOUT_SECONDS", "180"))
@@ -86,6 +88,9 @@ class BotStore:
                     downloads INTEGER NOT NULL DEFAULT 0,
                     first_seen INTEGER NOT NULL,
                     last_seen INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS snapchat_activations (
+                    user_id INTEGER PRIMARY KEY, activated_at INTEGER NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS metrics (
                     key TEXT PRIMARY KEY,
@@ -145,6 +150,19 @@ class BotStore:
                     (now, user_id),
                 )
         return created
+
+    def activate_snapchat(self, user_id: int) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO snapchat_activations VALUES (?, ?)",
+                (user_id, int(time.time())),
+            )
+
+    def snapchat_activated(self, user_id: int) -> bool:
+        with self.connection() as connection:
+            return connection.execute(
+                "SELECT 1 FROM snapchat_activations WHERE user_id = ?", (user_id,)
+            ).fetchone() is not None
 
     def referral_count(self, user_id: int) -> int:
         with self.connection() as connection:
@@ -257,11 +275,13 @@ def get_supported_platform(value: str) -> str | None:
     return None
 
 
-def subscription_keyboard() -> InlineKeyboardMarkup:
+def subscription_keyboard(bot_username: str = "") -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(f"📢 اشترك في {channel}", url=f"https://t.me/{channel[1:]}")]
         for channel in CHANNELS
     ]
+    payload = f"activate_{bot_username}" if bot_username else "activate"
+    rows.append([InlineKeyboardButton("👻 فعّل بوت سناب شات", url=f"https://t.me/Khsnapchat_bot?start={payload}")])
     rows.append(
         [InlineKeyboardButton("✅ تحققت من الاشتراك", callback_data="check_subscription")]
     )
@@ -312,6 +332,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if match:
                 inviter = int(match.group(1))
         STORE.register_user(user.id, inviter)
+    if user and context.args and context.args[0].startswith("snap_"):
+        if verify(ACTIVATION_SECRET, context.args[0], user.id):
+            STORE.activate_snapchat(user.id)
+        else:
+            await send_subscription_message(update, "انتهت صلاحية التفعيل أو الرابط غير صالح. افتح بوت سناب وأعد التفعيل.")
+            return
     await send_subscription_message(update)
 
 
@@ -362,22 +388,24 @@ async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def send_subscription_message(update: Update, extra_text: str = "") -> None:
     text = (
         "🎬 حمّل مقاطع TikTok وInstagram بسهولة وبالصوت!\n\n"
-        "📢 للبدء، اشترك في القناة التالية ثم اضغط زر التحقق:"
+        "📢 للبدء، اشترك في القناة، ثم افتح بوت سناب شات واضغط بدء.\n"
+        "👻 اضغط زر العودة من بوت سناب لإتمام التفعيل، ثم اضغط زر التحقق هنا:"
     )
     if extra_text:
         text += f"\n\n⚠️ {extra_text}"
 
+    bot_username = update.get_bot().username if hasattr(update, "get_bot") else ""
     if update.callback_query and update.callback_query.message:
         try:
             await update.callback_query.message.edit_text(
-                text, reply_markup=subscription_keyboard()
+                text, reply_markup=subscription_keyboard(bot_username)
             )
         except BadRequest as exc:
             if "message is not modified" not in str(exc).lower():
                 raise
     elif update.effective_message:
         await update.effective_message.reply_text(
-            text, reply_markup=subscription_keyboard()
+            text, reply_markup=subscription_keyboard(bot_username)
         )
 
 
@@ -434,6 +462,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     if missing:
         await send_subscription_message(update, "اشترك في جميع القنوات ثم أعد التحقق.")
+        return
+
+    if not STORE.snapchat_activated(query.from_user.id):
+        await send_subscription_message(update, "فعّل بوت سناب شات أولًا ثم اضغط زر العودة منه.")
         return
 
     if query.message:
@@ -693,6 +725,10 @@ async def download_social_video(
         await send_subscription_message(update)
         return
 
+    if not STORE.snapchat_activated(user.id):
+        await send_subscription_message(update, "فعّل بوت سناب شات أولًا ثم اضغط زر العودة منه.")
+        return
+
     url = message.text.strip()
     platform = get_supported_platform(url)
     if not platform:
@@ -778,6 +814,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def post_init(application: Application) -> None:
+    logger.info("Snapchat activation gate enabled; signing_configured=%s", len(ACTIVATION_SECRET) >= 32)
     await application.bot.set_my_commands(
         [
             BotCommand("start", "بدء استخدام البوت"),
