@@ -501,7 +501,7 @@ def library_page_view(platform: str, page: int) -> tuple[str, InlineKeyboardMark
         lines.append(f"#{video_id} • {source} • {time.strftime('%Y-%m-%d', time.gmtime(created_at))}")
     if not rows:
         lines.append("لا توجد فيديوهات محفوظة بموافقة أصحاب الطلبات.")
-    return "\\n".join(lines), library_markup(platform, page, rows, total)
+    return "\n".join(lines), library_markup(platform, page, rows, total)
 
 
 async def library_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
