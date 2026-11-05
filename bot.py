@@ -284,6 +284,32 @@ class BotStore:
                    ORDER BY id DESC LIMIT 10 OFFSET ?""", (offset,)
             ).fetchall()
 
+    def delete_owner_video(self, video_id: int) -> bool:
+        with self.connection() as connection:
+            result = connection.execute("DELETE FROM owner_library WHERE id = ?", (video_id,))
+            return result.rowcount > 0
+
+    def owner_library_page(self, platform: str, page: int) -> tuple[list[tuple], int]:
+        cutoff = int(time.time()) - LIBRARY_RETENTION_SECONDS
+        where = "created_at >= ?"
+        params: list = [cutoff]
+        if platform in ("tiktok", "instagram"):
+            where += " AND lower(platform) = ?"
+            params.append(platform)
+        with self.connection() as connection:
+            connection.execute("DELETE FROM owner_library WHERE created_at < ?", (cutoff,))
+            total = connection.execute(
+                f"SELECT COUNT(*) FROM owner_library WHERE {where}", params
+            ).fetchone()[0]
+            max_page = max(1, (total + 4) // 5)
+            page = min(max(1, page), max_page)
+            rows = connection.execute(
+                f"SELECT id, platform, created_at FROM owner_library WHERE {where} "
+                "ORDER BY id DESC LIMIT 5 OFFSET ?",
+                (*params, (page - 1) * 5),
+            ).fetchall()
+        return rows, total
+
     def owner_video_file(self, video_id: int) -> str | None:
         with self.connection() as connection:
             row = connection.execute(
@@ -443,29 +469,99 @@ async def library_optout_command(update: Update, context: ContextTypes.DEFAULT_T
     )
 
 
+def library_markup(platform: str, page: int, rows: list[tuple], total: int) -> InlineKeyboardMarkup:
+    categories = [
+        InlineKeyboardButton("📂 الكل", callback_data="lib:all:1"),
+        InlineKeyboardButton("🎵 TikTok", callback_data="lib:tiktok:1"),
+        InlineKeyboardButton("📸 Instagram", callback_data="lib:instagram:1"),
+    ]
+    buttons = [categories]
+    for video_id, _, _ in rows:
+        buttons.append([
+            InlineKeyboardButton(f"▶️ مشاهدة #{video_id}", callback_data=f"libwatch:{video_id}"),
+            InlineKeyboardButton("🗑 حذف", callback_data=f"libdelete:{video_id}:{platform}:{page}"),
+        ])
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"lib:{platform}:{page-1}"))
+    if page * 5 < total:
+        nav.append(InlineKeyboardButton("التالي ➡️", callback_data=f"lib:{platform}:{page+1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton("🔄 تحديث", callback_data=f"lib:{platform}:{page}")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def library_page_view(platform: str, page: int) -> tuple[str, InlineKeyboardMarkup]:
+    rows, total = STORE.owner_library_page(platform, page)
+    page = min(max(1, page), max(1, (total + 4) // 5))
+    label = {"all": "الكل", "tiktok": "TikTok", "instagram": "Instagram"}.get(platform, "الكل")
+    lines = [f"📂 مكتبة المالك | {label} | صفحة {page}", f"🎬 {total} فيديو خلال آخر 30 يومًا"]
+    for video_id, source, created_at in rows:
+        lines.append(f"#{video_id} • {source} • {time.strftime('%Y-%m-%d', time.gmtime(created_at))}")
+    if not rows:
+        lines.append("لا توجد فيديوهات محفوظة بموافقة أصحاب الطلبات.")
+    return "\\n".join(lines), library_markup(platform, page, rows, total)
+
+
 async def library_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    if not user or user.id not in ADMIN_USER_IDS or not update.effective_message:
+    message = update.effective_message
+    if not user or user.id not in ADMIN_USER_IDS or not message:
         return
+    if update.effective_chat.type != "private":
+        await message.reply_text("🔒 افتح المكتبة في محادثة خاصة مع البوت.")
+        return
+    text, markup = library_page_view("all", 1)
+    await message.reply_text(text, reply_markup=markup)
+
+
+async def library_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    if not query:
+        return
+    if not user or user.id not in ADMIN_USER_IDS or update.effective_chat.type != "private":
+        await query.answer("غير مصرح", show_alert=True)
+        return
+    data = query.data or ""
+    if data.startswith("libwatch:"):
+        video_id = int(data.split(":")[1])
+        file_id = STORE.owner_video_file(video_id)
+        if not file_id:
+            await query.answer("الفيديو غير متاح", show_alert=True)
+            return
+        await query.answer()
+        try:
+            await query.message.reply_video(video=file_id, supports_streaming=True)
+        except TelegramError:
+            await query.message.reply_text("تعذر تشغيل الفيديو.")
+        return
+    if data.startswith("libdelete:"):
+        _, raw_id, platform, raw_page = data.split(":")
+        STORE.delete_owner_video(int(raw_id))
+        page = int(raw_page)
+    else:
+        _, platform, raw_page = data.split(":")
+        page = int(raw_page)
+    if platform not in ("all", "tiktok", "instagram"):
+        await query.answer("اختيار غير صالح")
+        return
+    text, markup = library_page_view(platform, page)
+    await query.answer("تم تحديث المكتبة")
     try:
-        page = int(context.args[0]) if context.args else 1
-    except (ValueError, IndexError):
-        page = 1
-    page = max(1, min(page, 10000))
-    rows = STORE.list_owner_videos((page - 1) * 10)
-    if not rows:
-        await update.effective_message.reply_text("📂 لا توجد فيديوهات في هذه الصفحة.")
-        return
-    lines = [f"📂 مكتبة المالك — صفحة {page} (آخر 30 يومًا)"]
-    for video_id, platform, created_at in rows:
-        lines.append(f"#{video_id} • {platform} • {time.strftime('%Y-%m-%d', time.gmtime(created_at))}")
-    lines.append("للمشاهدة: /watch رقم_الفيديو | الصفحة التالية: /library " + str(page + 1))
-    await update.effective_message.reply_text("\n".join(lines))
+        await query.edit_message_text(text, reply_markup=markup)
+    except BadRequest as exc:
+        if "Message is not modified" not in str(exc):
+            raise
 
 
 async def watch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or user.id not in ADMIN_USER_IDS or not update.effective_message:
+        return
+    if update.effective_chat.type != "private":
+        await update.effective_message.reply_text("🔒 استخدم هذا الأمر في المحادثة الخاصة.")
         return
     if not context.args or not context.args[0].isdigit():
         await update.effective_message.reply_text("استخدم /watch رقم_الفيديو")
@@ -962,6 +1058,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("library_optout", library_optout_command))
     app.add_handler(CommandHandler("library", library_command))
     app.add_handler(CommandHandler("watch", watch_command))
+    app.add_handler(CallbackQueryHandler(library_callback, pattern=r"^(lib:(?:all|tiktok|instagram):[0-9]+|libwatch:[0-9]+|libdelete:[0-9]+:(?:all|tiktok|instagram):[0-9]+)$"))
     app.add_handler(CommandHandler("id", id_command))
     app.add_handler(
         CallbackQueryHandler(
