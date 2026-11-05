@@ -42,7 +42,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 TIKTOK_URL = "https://www.tiktok.com/@kh01ed?_r=1&_t=ZS-99TrxV4Gtjc"
-SNAPCHAT_URL = "https://snapchat.com/t/d9GtFjtN"
+SNAPCHAT_URL = "https://snapchat.com/t/OnxAeWfa"
 NOON_URL = "https://s.noon.com/iU1YAlSF0Mw"
 NOON_DISCOUNT_CODE = "Hoob"
 CHANNELS = ("@kh01ed",)
