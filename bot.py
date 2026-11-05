@@ -61,6 +61,7 @@ ADMIN_USER_IDS = {
     for value in os.getenv("ADMIN_USER_IDS", "").split(",")
     if value.strip().isdigit()
 }
+LIBRARY_RETENTION_SECONDS = 30 * 86400
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 SEEN_USERS: set[int] = set()
 VIDEO_CACHE_VERSION = "portrait-v2"
@@ -96,6 +97,19 @@ class BotStore:
                     key TEXT PRIMARY KEY,
                     value INTEGER NOT NULL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS library_consent (
+                    user_id INTEGER PRIMARY KEY,
+                    enabled_at INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS owner_library (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    telegram_file_id TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS owner_library_created_idx
+                    ON owner_library(created_at);
                 CREATE TABLE IF NOT EXISTS video_cache (
                     url_hash TEXT PRIMARY KEY,
                     telegram_file_id TEXT NOT NULL,
@@ -228,6 +242,57 @@ class BotStore:
                 "DELETE FROM video_cache WHERE url_hash = ?", (self._url_hash(url),)
             )
 
+    def set_library_consent(self, user_id: int, enabled: bool) -> None:
+        with self.connection() as connection:
+            if enabled:
+                connection.execute(
+                    "INSERT OR REPLACE INTO library_consent (user_id, enabled_at) VALUES (?, ?)",
+                    (user_id, int(time.time())),
+                )
+            else:
+                connection.execute("DELETE FROM library_consent WHERE user_id = ?", (user_id,))
+                connection.execute("DELETE FROM owner_library WHERE user_id = ?", (user_id,))
+
+    def library_consent_enabled(self, user_id: int) -> bool:
+        with self.connection() as connection:
+            return connection.execute(
+                "SELECT 1 FROM library_consent WHERE user_id = ?", (user_id,)
+            ).fetchone() is not None
+
+    def save_owner_video(self, user_id: int, file_id: str, platform: str) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                "DELETE FROM owner_library WHERE created_at < ?",
+                (int(time.time()) - LIBRARY_RETENTION_SECONDS,),
+            )
+            # Check consent in the same transaction to avoid saving after opt-out.
+            connection.execute(
+                """INSERT INTO owner_library (user_id, telegram_file_id, platform, created_at)
+                   SELECT ?, ?, ?, ? WHERE EXISTS
+                   (SELECT 1 FROM library_consent WHERE user_id = ?)""",
+                (user_id, file_id, platform, int(time.time()), user_id),
+            )
+
+    def list_owner_videos(self, offset: int = 0) -> list[tuple]:
+        with self.connection() as connection:
+            connection.execute(
+                "DELETE FROM owner_library WHERE created_at < ?",
+                (int(time.time()) - LIBRARY_RETENTION_SECONDS,),
+            )
+            return connection.execute(
+                """SELECT id, platform, created_at FROM owner_library
+                   ORDER BY id DESC LIMIT 10 OFFSET ?""", (offset,)
+            ).fetchall()
+
+    def owner_video_file(self, video_id: int) -> str | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                """SELECT telegram_file_id FROM owner_library
+                   WHERE id = ? AND created_at >= ?""",
+                (video_id, int(time.time()) - LIBRARY_RETENTION_SECONDS),
+            ).fetchone()
+            return str(row[0]) if row else None
+
     def statistics(self) -> dict[str, int]:
         with self.connection() as connection:
             users = connection.execute(
@@ -354,6 +419,65 @@ async def invite_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "شارك الرابط من الزر التالي:",
         reply_markup=social_keyboard(context.bot.username, user.id),
     )
+
+
+async def library_optin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or not update.effective_message:
+        return
+    STORE.set_library_consent(user.id, True)
+    await update.effective_message.reply_text(
+        "✅ وافقت على إدراج فيديوهاتك العامة التي تطلب تحميلها مستقبلًا في مكتبة المالك لمدة تصل إلى 30 يومًا. "
+        "يمكن للمالك مشاهدتها. لإلغاء الموافقة وحذف سجلاتك من المكتبة أرسل /library_optout."
+    )
+
+
+async def library_optout_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or not update.effective_message:
+        return
+    STORE.set_library_consent(user.id, False)
+    await update.effective_message.reply_text(
+        "✅ ألغيت الموافقة وحُذفت سجلات فيديوهاتك من مكتبة المالك. "
+        "لا يؤثر هذا على النسخ التي سبق إرسالها أو التخزين المؤقت التقني."
+    )
+
+
+async def library_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or user.id not in ADMIN_USER_IDS or not update.effective_message:
+        return
+    try:
+        page = int(context.args[0]) if context.args else 1
+    except (ValueError, IndexError):
+        page = 1
+    page = max(1, min(page, 10000))
+    rows = STORE.list_owner_videos((page - 1) * 10)
+    if not rows:
+        await update.effective_message.reply_text("📂 لا توجد فيديوهات في هذه الصفحة.")
+        return
+    lines = [f"📂 مكتبة المالك — صفحة {page} (آخر 30 يومًا)"]
+    for video_id, platform, created_at in rows:
+        lines.append(f"#{video_id} • {platform} • {time.strftime('%Y-%m-%d', time.gmtime(created_at))}")
+    lines.append("للمشاهدة: /watch رقم_الفيديو | الصفحة التالية: /library " + str(page + 1))
+    await update.effective_message.reply_text("\n".join(lines))
+
+
+async def watch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or user.id not in ADMIN_USER_IDS or not update.effective_message:
+        return
+    if not context.args or not context.args[0].isdigit():
+        await update.effective_message.reply_text("استخدم /watch رقم_الفيديو")
+        return
+    file_id = STORE.owner_video_file(int(context.args[0]))
+    if not file_id:
+        await update.effective_message.reply_text("الفيديو غير موجود أو انتهت مدة الاحتفاظ.")
+        return
+    try:
+        await update.effective_message.reply_video(video=file_id, supports_streaming=True)
+    except TelegramError:
+        await update.effective_message.reply_text("تعذر تشغيل الملف المحفوظ في تيليجرام.")
 
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -751,6 +875,7 @@ async def download_social_video(
                 performance.failed_stage = None
             else:
                 performance.result = "success"
+                STORE.save_owner_video(user.id, cached_file_id, platform)
                 STORE.record_download(user.id, cached=True)
                 await send_download_followups(message, context.bot.username, user.id)
                 return
@@ -787,6 +912,7 @@ async def download_social_video(
             performance.result = "success"
             if sent_video.video:
                 STORE.cache_file(url, sent_video.video.file_id, platform)
+                STORE.save_owner_video(user.id, sent_video.video.file_id, platform)
             STORE.record_download(user.id)
             await send_download_followups(message, context.bot.username, user.id)
         except Exception:
@@ -832,6 +958,10 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("invite", invite_command))
     app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("library_optin", library_optin_command))
+    app.add_handler(CommandHandler("library_optout", library_optout_command))
+    app.add_handler(CommandHandler("library", library_command))
+    app.add_handler(CommandHandler("watch", watch_command))
     app.add_handler(CommandHandler("id", id_command))
     app.add_handler(
         CallbackQueryHandler(
