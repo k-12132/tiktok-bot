@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import sqlite3
 import sys
 import tempfile
@@ -18,7 +19,7 @@ from activation import verify
 from imageio_ffmpeg import get_ffmpeg_exe
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatMemberStatus
-from telegram.error import BadRequest, Forbidden, TelegramError
+from telegram.error import BadRequest, Forbidden, NetworkError, TelegramError
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -63,6 +64,8 @@ ADMIN_USER_IDS = {
 }
 LIBRARY_RETENTION_SECONDS = 30 * 86400
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
+ACTIVE_DOWNLOAD_USERS: set[int] = set()
+MAX_PENDING_REQUESTS = max(MAX_CONCURRENT_DOWNLOADS, 8)
 SEEN_USERS: set[int] = set()
 VIDEO_CACHE_VERSION = "portrait-v2"
 
@@ -639,16 +642,81 @@ async def get_missing_channels(bot, user_id: int) -> tuple[list[str], bool]:
     }
     for channel in CHANNELS:
         try:
-            member = await bot.get_chat_member(channel, user_id)
-            if member.status not in allowed:
+            member = await read_membership(bot, channel, user_id)
+            if member.status not in allowed and not (
+                member.status == ChatMemberStatus.RESTRICTED and member.is_member
+            ):
                 missing.append(channel)
         except (BadRequest, Forbidden) as exc:
             configuration_error = True
-            logger.warning("Cannot verify membership for %s: %s", channel, exc)
+            logger.warning("Membership check unavailable (%s)", type(exc).__name__)
         except TelegramError:
             configuration_error = True
-            logger.exception("Telegram error while checking %s", channel)
+            logger.warning("Membership check unavailable")
     return missing, configuration_error
+
+
+async def read_membership(bot, channel: str, user_id: int):
+    # Reads are safe to retry; uploads are not, because delivery may have succeeded.
+    for attempt in range(3):
+        try:
+            return await bot.get_chat_member(channel, user_id, read_timeout=10, connect_timeout=10)
+        except BadRequest:
+            raise
+        except NetworkError:
+            if attempt == 2:
+                raise
+            await asyncio.sleep(0.5 * (2 ** attempt))
+
+
+class DownloadFailure(RuntimeError):
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def download_failure_reason(detail: str) -> str:
+    text = detail.lower()
+    if any(part in text for part in ("permission to view", "private", "login required", "log into", "not available", "unavailable", "removed")):
+        return "restricted"
+    if any(part in text for part in ("max-filesize", "larger than", "file is larger")):
+        return "too_large"
+    if "timed out" in text or "timeout" in text:
+        return "timeout"
+    return "download_failed"
+
+
+def failure_message(exc: Exception) -> str:
+    if isinstance(exc, DownloadFailure):
+        return {
+            "restricted": "❌ المقطع غير متاح للبوت أو يتطلب تسجيل دخول. جرّب رابط فيديو عام آخر.",
+            "too_large": "❌ حجم الفيديو يتجاوز حد البوت المسموح. جرّب مقطعًا أقصر.",
+            "timeout": "⌛ استغرق تجهيز الفيديو وقتًا طويلًا. حاول لاحقًا أو جرّب مقطعًا أقصر.",
+        }.get(exc.reason, "❌ تعذر تنزيل الفيديو من المصدر. تأكد أن الرابط عام ثم حاول لاحقًا.")
+    if isinstance(exc, NetworkError):
+        return "⚠️ انقطع الاتصال بتيليجرام ولم أتمكن من تأكيد الإرسال. تحقق من وصول الفيديو قبل إعادة المحاولة."
+    return "❌ تعذر تجهيز الفيديو أو إرساله. جرّب رابطًا عامًا آخر أو حاول لاحقًا."
+
+
+async def process_output(command, timeout: float):
+    process = await asyncio.create_subprocess_exec(
+        *command, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        start_new_session=(os.name == "posix"),
+    )
+    try:
+        _, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        return process.returncode, stderr
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        # yt-dlp can spawn ffmpeg. Stop the entire group before removing its files.
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
+        except ProcessLookupError:
+            pass
+        await process.communicate()
+        raise
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -677,7 +745,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if configuration_error:
         await send_subscription_message(
             update,
-            "تعذر التحقق. تأكد أن البوت مشرف في جميع القنوات ثم حاول مجددًا.",
+            "تعذر التحقق من الاشتراك مؤقتًا. حاول بعد قليل.",
         )
         return
     if missing:
@@ -738,30 +806,19 @@ async def download_video(url: str, directory: Path) -> Path:
         output_template,
         url,
     )
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
-    )
     try:
-        _, stderr = await asyncio.wait_for(
-            process.communicate(), timeout=DOWNLOAD_TIMEOUT_SECONDS
-        )
+        returncode, stderr = await process_output(command, DOWNLOAD_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
-        process.kill()
-        await process.communicate()
-        raise RuntimeError("download timed out")
-
-    if process.returncode != 0:
-        detail = stderr.decode("utf-8", errors="replace")[-500:]
-        raise RuntimeError(f"yt-dlp failed: {detail}")
+        raise DownloadFailure("timeout") from None
+    if returncode != 0:
+        raise DownloadFailure(download_failure_reason(stderr.decode("utf-8", errors="replace")))
 
     files = [path for path in directory.iterdir() if path.is_file()]
     if len(files) != 1:
         raise RuntimeError("unexpected downloader output")
     video_path = files[0]
     if video_path.stat().st_size > MAX_VIDEO_BYTES:
-        raise RuntimeError("downloaded file exceeds Telegram limit")
+        raise DownloadFailure("too_large")
     return video_path
 
 
@@ -804,25 +861,14 @@ async def normalize_video_for_snapchat(video_path: Path, directory: Path) -> Pat
         "+faststart",
         str(output_path),
     )
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
-    )
     try:
-        _, stderr = await asyncio.wait_for(
-            process.communicate(), timeout=VIDEO_PROCESS_TIMEOUT_SECONDS
-        )
+        returncode, _ = await process_output(command, VIDEO_PROCESS_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
-        process.kill()
-        await process.communicate()
-        raise RuntimeError("video normalization timed out")
-
-    if process.returncode != 0 or not output_path.exists():
-        detail = stderr.decode("utf-8", errors="replace")[-500:]
-        raise RuntimeError(f"ffmpeg normalization failed: {detail}")
+        raise DownloadFailure("timeout") from None
+    if returncode != 0 or not output_path.exists():
+        raise DownloadFailure("normalization_failed")
     if output_path.stat().st_size > MAX_VIDEO_BYTES:
-        raise RuntimeError("normalized video exceeds Telegram limit")
+        raise DownloadFailure("too_large")
     return output_path
 
 
@@ -830,15 +876,11 @@ async def is_ready_portrait_video(video_path: Path) -> bool:
     """Skip expensive encoding only for an unambiguous, compatible MP4."""
     if video_path.suffix.lower() != ".mp4":
         return False
-    process = await asyncio.create_subprocess_exec(
-        get_ffmpeg_exe(), "-hide_banner", "-i", str(video_path),
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-    )
     try:
-        _, stderr = await asyncio.wait_for(process.communicate(), timeout=15)
+        _, stderr = await process_output(
+            (get_ffmpeg_exe(), "-hide_banner", "-i", str(video_path)), 15
+        )
     except asyncio.TimeoutError:
-        process.kill()
-        await process.communicate()
         return False
     info = stderr.decode("utf-8", errors="replace")
     video_lines = [line for line in info.splitlines() if "Video:" in line and "Stream #" in line]
@@ -846,11 +888,20 @@ async def is_ready_portrait_video(video_path: Path) -> bool:
     if len(video_lines) != 1 or len(audio_lines) > 1:
         return False
     video = video_lines[0]
+    dimensions = re.search(r"\b(\d{2,5})x(\d{2,5})\b", video)
+    if not dimensions:
+        return False
+    width, height = map(int, dimensions.groups())
+    # Preserve native 9:16 H.264 rather than scaling an already suitable video.
+    # Reject uncertain pixel geometry, rotation, and formats needing conversion.
+    sar = re.search(r"SAR (\d+):(\d+)", video)
     return (
         bool(re.search(r"Video: h264\b", video))
-        and "yuv420p" in video
-        and bool(re.search(rf"\b{TARGET_VIDEO_WIDTH}x{TARGET_VIDEO_HEIGHT}\b", video))
-        and "[SAR 1:1 DAR 9:16]" in video
+        and bool(re.search(r"\byuv420p\b", video))
+        and width * 16 == height * 9
+        and width <= 1080 and height <= 1920
+        and width % 2 == 0 and height % 2 == 0
+        and sar is not None and sar[1] == sar[2] and int(sar[1]) > 0
         and not re.search(r"(?:rotate\s*:|displaymatrix: rotation of)", info, re.IGNORECASE)
         and (not audio_lines or bool(re.search(r"Audio: aac\b", audio_lines[0])))
     )
@@ -924,40 +975,57 @@ class VideoPerformance:
         logger.info("video_performance %s", json.dumps(payload, sort_keys=True))
 
 
-async def download_social_video(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    message = update.effective_message
-    user = update.effective_user
+async def download_social_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message, user = update.effective_message, update.effective_user
     if not message or not user or not message.text:
         return
+    if user.id in ACTIVE_DOWNLOAD_USERS:
+        await message.reply_text("⏳ طلبك السابق قيد المعالجة، انتظر اكتماله.")
+        return
+    if len(ACTIVE_DOWNLOAD_USERS) >= MAX_PENDING_REQUESTS:
+        await message.reply_text("⏳ البوت مشغول حاليًا. حاول بعد قليل.")
+        return
+    ACTIVE_DOWNLOAD_USERS.add(user.id)
+    try:
+        await process_social_video(update, context)
+    finally:
+        ACTIVE_DOWNLOAD_USERS.discard(user.id)
 
+
+def record_delivery(user_id, file_id, platform, url, *, cached=False):
+    # An accounting/storage failure must never turn a delivered video into a retry.
+    try:
+        if file_id:
+            if not cached:
+                STORE.cache_file(url, file_id, platform)
+            STORE.save_owner_video(user_id, file_id, platform)
+        STORE.record_download(user_id, **({"cached": True} if cached else {}))
+    except Exception as exc:
+        logger.warning("Delivery accounting unavailable (%s)", type(exc).__name__)
+
+
+async def process_social_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message, user = update.effective_message, update.effective_user
     STORE.register_user(user.id)
-
     missing, configuration_error = await get_missing_channels(context.bot, user.id)
     if configuration_error:
-        await send_subscription_message(
-            update,
-            "تعذر التحقق. تأكد أن البوت مشرف في جميع القنوات ثم حاول مجددًا.",
-        )
+        await send_subscription_message(update, "تعذر التحقق من الاشتراك مؤقتًا. حاول بعد قليل.")
         return
     if missing:
         await send_subscription_message(update)
         return
-
     if not STORE.snapchat_activated(user.id):
         await send_subscription_message(update, "فعّل بوت سناب شات أولًا ثم اضغط زر العودة منه.")
         return
-
     url = message.text.strip()
     platform = get_supported_platform(url)
     if not platform:
-        await message.reply_text(
-            "❌ أرسل رابط فيديو صحيحًا من TikTok أو Instagram فقط 📎"
-        )
+        await message.reply_text("❌ أرسل رابط فيديو صحيحًا من TikTok أو Instagram فقط 📎")
         return
 
     performance = VideoPerformance(platform)
+    progress_message = None
+    work_dir = None
     try:
         cached_file_id = STORE.cached_file_id(url)
         if cached_file_id:
@@ -965,74 +1033,71 @@ async def download_social_video(
             try:
                 with performance.stage("cache_send"):
                     await message.reply_video(video=cached_file_id, supports_streaming=True)
-            except BadRequest:
-                logger.info("Cached Telegram file is no longer valid; downloading again")
+            except BadRequest as exc:
+                if not any(part in str(exc).lower() for part in (
+                    "invalid file", "wrong file identifier", "file reference", "file_id",
+                )):
+                    raise
                 STORE.remove_cached_file(url)
                 performance.failed_stage = None
             else:
                 performance.result = "success"
-                STORE.save_owner_video(user.id, cached_file_id, platform)
-                STORE.record_download(user.id, cached=True)
+                record_delivery(user.id, cached_file_id, platform, url, cached=True)
                 await send_download_followups(message, context.bot.username, user.id)
                 return
 
         performance.route = "pending"
-        performance.result = "failed"
         progress_message = await message.reply_text("⏳ جاري تجهيز الفيديو...")
-        work_dir = Path(tempfile.mkdtemp(prefix="social-video-", dir="/tmp"))
+        with performance.stage("queue"):
+            await DOWNLOAD_SEMAPHORE.acquire()
         try:
-            with performance.stage("queue"):
-                await DOWNLOAD_SEMAPHORE.acquire()
-            try:
-                with performance.stage("download"):
-                    video_path = await download_video(url, work_dir)
-                with performance.stage("probe"):
-                    ready = await is_ready_portrait_video(video_path)
-                performance.route = "direct" if ready else "normalized"
-                if not ready:
-                    with performance.stage("normalize"):
-                        video_path = await normalize_video_for_snapchat(video_path, work_dir)
-            finally:
-                DOWNLOAD_SEMAPHORE.release()
+            work_dir = Path(tempfile.mkdtemp(prefix="social-video-", dir="/tmp"))
+            with performance.stage("download"):
+                video_path = await download_video(url, work_dir)
+            with performance.stage("probe"):
+                ready = await is_ready_portrait_video(video_path)
+            performance.route = "direct" if ready else "normalized"
+            if not ready:
+                with performance.stage("normalize"):
+                    video_path = await normalize_video_for_snapchat(video_path, work_dir)
             performance.bytes_sent = video_path.stat().st_size
             with performance.stage("upload"):
                 with video_path.open("rb") as video:
                     sent_video = await message.reply_video(
-                        video=video,
-                        supports_streaming=True,
-                        width=TARGET_VIDEO_WIDTH,
-                        height=TARGET_VIDEO_HEIGHT,
-                        read_timeout=120,
-                        write_timeout=120,
+                        video=video, supports_streaming=True,
+                        **({} if ready else {"width": TARGET_VIDEO_WIDTH, "height": TARGET_VIDEO_HEIGHT}),
+                        read_timeout=120, write_timeout=120,
                     )
             performance.result = "success"
-            if sent_video.video:
-                STORE.cache_file(url, sent_video.video.file_id, platform)
-                STORE.save_owner_video(user.id, sent_video.video.file_id, platform)
-            STORE.record_download(user.id)
-            await send_download_followups(message, context.bot.username, user.id)
-        except Exception:
-            logger.exception("%s video download or upload failed", platform)
-            STORE.record_failure()
-            await message.reply_text(
-                "❌ تعذر تحميل الفيديو. تأكد أنه عام وغير مقيد، ثم حاول رابطًا آخر."
-            )
+            file_id = sent_video.video.file_id if sent_video.video else None
+            record_delivery(user.id, file_id, platform, url)
         finally:
+            if work_dir:
+                shutil.rmtree(work_dir, ignore_errors=True)
+                work_dir = None
+            DOWNLOAD_SEMAPHORE.release()
+        await send_download_followups(message, context.bot.username, user.id)
+    except Exception as exc:
+        logger.warning("Media request failed platform=%s stage=%s reason=%s", platform,
+                       performance.failed_stage, exc.reason if isinstance(exc, DownloadFailure) else type(exc).__name__)
+        try:
+            STORE.record_failure()
+        except Exception:
+            logger.warning("Failure counter unavailable")
+        await message.reply_text(failure_message(exc))
+    finally:
+        if work_dir:
+            shutil.rmtree(work_dir, ignore_errors=True)
+        if progress_message:
             try:
                 await progress_message.delete()
             except TelegramError:
                 pass
-            shutil.rmtree(work_dir, ignore_errors=True)
-    finally:
         performance.log()
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    error = context.error
-    logger.error(
-        "Unhandled update error",
-        exc_info=(type(error), error, error.__traceback__) if error else None,
-    )
+    logger.warning("Telegram update failed (%s)", type(context.error).__name__)
 
 
 async def post_init(application: Application) -> None:
@@ -1066,7 +1131,7 @@ def build_application() -> Application:
         )
     )
     app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, download_social_video)
+        MessageHandler(filters.TEXT & ~filters.COMMAND, download_social_video, block=False)
     )
     app.add_error_handler(error_handler)
     return app
@@ -1078,5 +1143,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
