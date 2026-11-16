@@ -44,7 +44,9 @@ succeeds. Summaries contain no URL, user ID, token, or exception text.
 Run `python -m unittest discover -s tests -v`. Then on Render, send public TikTok
 and Instagram videos covering compatible portrait files and files needing
 normalization. Repeat the same URLs to exercise the cache. Check received audio
-and 720x1280 (9:16) geometry. Compare median and P95 stage times separately by
+and 9:16 display geometry. Compatible H.264/AAC MP4 files retain their native
+9:16 resolution up to 1080x1920; other files are normalized to 720x1280.
+Compare median and P95 stage times separately by
 platform and route, using enough requests to make percentiles meaningful. Keep
 cache hits separate from new downloads and compare similar durations/file sizes.
 The direct route should have zero normalization time. These logs measure latency;
@@ -65,3 +67,23 @@ is only triggered by a BadRequest from the cached video send itself.
 Configure both services before deploying the TikTok gate. Set the same randomly generated `BOT_ACTIVATION_SECRET` (32+ characters) in both services. The activation link automatically includes the return bot username; `TIKTOK_BOT_USERNAME` is an optional fallback for old activation links. Keep secrets in server environment settings only. Deploy the Snapchat companion first.
 
 Users join @kh01ed, open @Khsnapchat_bot using the activation button, press Start, then use its return button. Signed receipts expire in ten minutes and are bound to the Telegram user ID. TikTok stores activations in SQLite; use a persistent BOT_DB_PATH to retain them after deployments. This verifies starting Snapchat once, not whether it stays unblocked afterward. Missing or mismatched secrets deny new activations.
+
+## Request reliability
+
+Media handlers run in the background so a download does not block commands or
+subscription buttons. Each user may have one active request. Admission is bounded
+to eight users (or MAX_CONCURRENT_DOWNLOADS if larger), with at most
+MAX_CONCURRENT_DOWNLOADS media pipelines including uploads. Excess requests get a
+busy response; this is an in-memory queue, not durable job storage.
+
+Membership reads retry temporary Telegram network failures up to three attempts
+with short backoff. Failed verification never grants access. Video uploads are
+not retried automatically because a lost response can follow a successful send.
+Only invalid cached file IDs trigger a fresh download. Storage/accounting failures
+after delivery do not resend a video or report it as a failed download.
+
+Timeouts and cancellation stop the downloader/FFmpeg process group before cleanup.
+Error logs contain reason codes, not downloader stderr or user links. Keep the
+existing BOT_ACTIVATION_SECRET and storage environment settings when deploying;
+this change does not add paid storage or migrate ephemeral SQLite data.
+
