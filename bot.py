@@ -348,10 +348,12 @@ STORE = BotStore(BOT_DB_PATH)
 def get_supported_platform(value: str) -> str | None:
     try:
         parsed = urlparse(value.strip())
+        if parsed.port not in (None, 443):
+            return None
     except ValueError:
         return None
     if (
-        parsed.scheme not in {"http", "https"}
+        parsed.scheme != "https"
         or parsed.hostname is None
         or parsed.username is not None
         or parsed.password is not None
@@ -736,6 +738,7 @@ async def download_video(url: str, directory: Path) -> Path:
         ),
         "--output",
         output_template,
+        "--",
         url,
     )
     process = await asyncio.create_subprocess_exec(
@@ -846,12 +849,17 @@ async def is_ready_portrait_video(video_path: Path) -> bool:
     if len(video_lines) != 1 or len(audio_lines) > 1:
         return False
     video = video_lines[0]
+    dimensions = re.search(r"\b(\d{2,5})x(\d{2,5})\b", video)
+    if not dimensions:
+        return False
+    width, height = map(int, dimensions.groups())
+    if width * 16 != height * 9 or width % 2 or height % 2:
+        return False
     # FFmpeg may omit SAR/DAR when square pixels are implicit; keep strict geometry.
     return (
         bool(re.search(r"Video: h264\b", video))
         and "yuv420p" in video
-        and bool(re.search(rf"\b{TARGET_VIDEO_WIDTH}x{TARGET_VIDEO_HEIGHT}\b", video))
-        and "[SAR 1:1 DAR 9:16]" in video
+        and ("[SAR 1:1 DAR 9:16]" in video or not re.search(r"\b(?:SAR|DAR)\b", video))
         and not re.search(r"(?:rotate\s*:|displaymatrix: rotation of)", info, re.IGNORECASE)
         and (not audio_lines or bool(re.search(r"Audio: aac\b", audio_lines[0])))
     )
@@ -1005,8 +1013,8 @@ async def download_social_video(
                     sent_video = await message.reply_video(
                         video=video,
                         supports_streaming=True,
-                        width=TARGET_VIDEO_WIDTH,
-                        height=TARGET_VIDEO_HEIGHT,
+                        width=None if ready else TARGET_VIDEO_WIDTH,
+                        height=None if ready else TARGET_VIDEO_HEIGHT,
                         read_timeout=120,
                         write_timeout=120,
                     )
