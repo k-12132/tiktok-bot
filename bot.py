@@ -329,11 +329,16 @@ class BotStore:
                 """
             ).fetchone()
             metrics = dict(connection.execute("SELECT key, value FROM metrics"))
+            now = int(time.time())
+            new_today = connection.execute("SELECT COUNT(*) FROM users WHERE first_seen >= ?", (now - 86400,)).fetchone()[0]
+            active_month = connection.execute("SELECT COUNT(*) FROM users WHERE last_seen >= ?", (now - 30 * 86400,)).fetchone()[0]
             cached_videos = connection.execute(
                 "SELECT COUNT(*) FROM video_cache"
             ).fetchone()[0]
         return {
             "users": int(users[0]),
+            "new_today": new_today,
+            "active_month": active_month,
             "downloads": int(users[1]),
             "referrals": int(users[2]),
             "failures": int(metrics.get("downloads_failed", 0)),
@@ -590,6 +595,8 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await message.reply_text(
         "📊 إحصائيات البوت منذ آخر تشغيل\n\n"
         f"👥 المستخدمون: {stats['users']}\n"
+        f"🆕 الجدد آخر 24 ساعة: {stats['new_today']}\n"
+        f"🟢 النشطون آخر 30 يومًا: {stats['active_month']}\n"
         f"✅ التحميلات الناجحة: {stats['downloads']}\n"
         f"❌ التحميلات الفاشلة: {stats['failures']}\n"
         f"🎁 الدعوات الناجحة: {stats['referrals']}\n"
@@ -1053,6 +1060,12 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def post_init(application: Application) -> None:
     logger.info("Snapchat activation gate enabled; signing_configured=%s", len(ACTIVATION_SECRET) >= 32)
+    try:
+        await application.bot.set_my_name("تحميل تيك توك وإنستغرام | KH Downloader")
+        await application.bot.set_my_description("حمّل فيديوهات TikTok وInstagram العامة بسهولة. أرسل الرابط للبدء. شارك البوت مع أصدقائك عبر /invite.")
+        await application.bot.set_my_short_description("تحميل فيديوهات تيك توك وإنستغرام العامة | KH Downloader")
+    except TelegramError:
+        logger.warning("Bot profile update unavailable")
     await application.bot.set_my_commands(
         [
             BotCommand("start", "بدء استخدام البوت"),
