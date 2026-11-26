@@ -18,7 +18,7 @@ from activation import verify
 from imageio_ffmpeg import get_ffmpeg_exe
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatMemberStatus
-from telegram.error import BadRequest, Forbidden, TelegramError
+from telegram.error import BadRequest, Forbidden, NetworkError, TelegramError
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -846,6 +846,7 @@ async def is_ready_portrait_video(video_path: Path) -> bool:
     if len(video_lines) != 1 or len(audio_lines) > 1:
         return False
     video = video_lines[0]
+    # FFmpeg may omit SAR/DAR when square pixels are implicit; keep strict geometry.
     return (
         bool(re.search(r"Video: h264\b", video))
         and "yuv420p" in video
@@ -1033,6 +1034,9 @@ async def download_social_video(
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     error = context.error
+    if isinstance(error, NetworkError):
+        logger.warning("Temporary Telegram network error: %s", type(error).__name__)
+        return
     logger.error(
         "Unhandled update error",
         exc_info=(type(error), error, error.__traceback__) if error else None,
