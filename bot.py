@@ -957,6 +957,10 @@ async def download_social_video(
         )
         return
 
+    if platform.lower() == "tiktok" and re.search(r"/photo/\d+", url):
+        await message.reply_text("ℹ️ هذا رابط منشور صور من تيك توك. البوت يدعم الفيديوهات حاليًا؛ أرسل رابط فيديو.")
+        return
+
     performance = VideoPerformance(platform)
     try:
         cached_file_id = STORE.cached_file_id(url)
@@ -1073,7 +1077,7 @@ def build_application() -> Application:
 
 
 def main() -> None:
-    build_application().run_polling(drop_pending_updates=True)
+    build_application().run_polling(drop_pending_updates=False)
 
 
 if __name__ == "__main__":
