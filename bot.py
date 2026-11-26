@@ -933,6 +933,13 @@ class VideoPerformance:
         logger.info("video_performance %s", json.dumps(payload, sort_keys=True))
 
 
+async def update_download_progress(message, text):
+    try:
+        await message.edit_text(text)
+    except TelegramError:
+        pass
+
+
 async def download_social_video(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -991,22 +998,25 @@ async def download_social_video(
 
         performance.route = "pending"
         performance.result = "failed"
-        progress_message = await message.reply_text("⏳ جاري تجهيز الفيديو...")
+        progress_message = await message.reply_text("⏳ جاري انتظار دور التحميل...")
         work_dir = Path(tempfile.mkdtemp(prefix="social-video-", dir="/tmp"))
         try:
             with performance.stage("queue"):
                 await DOWNLOAD_SEMAPHORE.acquire()
             try:
+                await update_download_progress(progress_message, "⬇️ جاري تحميل الفيديو...")
                 with performance.stage("download"):
                     video_path = await download_video(url, work_dir)
                 with performance.stage("probe"):
                     ready = await is_ready_portrait_video(video_path)
                 performance.route = "direct" if ready else "normalized"
                 if not ready:
+                    await update_download_progress(progress_message, "⚙️ جاري تجهيز الفيديو للتوافق...")
                     with performance.stage("normalize"):
                         video_path = await normalize_video_for_snapchat(video_path, work_dir)
             finally:
                 DOWNLOAD_SEMAPHORE.release()
+            await update_download_progress(progress_message, "📤 جاري إرسال الفيديو...")
             performance.bytes_sent = video_path.stat().st_size
             with performance.stage("upload"):
                 with video_path.open("rb") as video:
